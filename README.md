@@ -1,7 +1,8 @@
 # SectorZero
 
-An open-source (MIT) disk image utility: create floppy and disk images, browse them, and
-inject or extract files without mounting anything. It aims to be a free alternative to WinImage.
+An open-source (MIT) disk image utility: create floppy, hard disk and CD images, browse them,
+and inject or extract files without mounting anything. It reads and writes the formats WinImage
+uses (IMA, IMZ, WLZ, VHD, VMDK) and aims to be a free alternative to it.
 
 SectorZero is an independent project. It is not affiliated with or endorsed by WinImage or
 Gilles Vollant Software; WinImage is their trademark and is named here only to describe
@@ -15,20 +16,28 @@ Windows first. The other platforms come later.
 
 | Area | Works now |
 |---|---|
-| Containers | Raw sector images: `.ima` `.img` `.vfd` `.flp` `.dsk`. Images saved short ("truncate unused space") are read as if padded with zeros. |
-| Layout | Bare FAT volumes (floppies, WinImage partition images) and MBR disks (primary partitions) |
-| File systems | FAT12 / FAT16 / FAT32 with long file names |
-| Create | Every standard floppy format (160 KB to 2.88 MB, including DMF and 1.68/1.72 MB), and bare FAT volumes of any size |
+| Containers | Raw sector images (`.ima` `.img` `.vfd` `.flp` `.dsk`, short "truncated" images read as zero-padded). WinImage IMZ (zip) and WLZ (zip holding several images). VHD fixed and dynamic. VHDX (dynamic and fixed, with log replay). VMDK monolithicSparse, monolithicFlat and descriptor + extents. All read/write. |
+| Layout | Bare FAT volumes, MBR disks (primary and logical partitions), GPT disks, ISO 9660 CD/DVD images |
+| File systems | FAT12 / FAT16 / FAT32 with long file names (read/write). ISO 9660 with Joliet and Rock Ridge names (read-only), El Torito boot catalog |
+| Create | Every standard floppy format (160 KB to 2.88 MB, including DMF and 1.68/1.72 MB); FAT volumes and MBR or GPT hard disk images of any size, in any of the containers above |
 | Edit | Inject files and folders, extract, delete, create folders, rename/move. Host file timestamps are kept. |
+| Tools | Volume label; boot sector view/edit (OEM name, serial, geometry, hidden sectors, drive number), export, and boot-code import that keeps the BPB; MBR export/import; defragment (with optional free-space clearing); change format / resize, keeping files, dates, attributes, label, serial and boot code; save as another container; build ISO images (optionally bootable, BIOS or UEFI); save an ISO's boot image |
 
-Next up (see RESEARCH.md §5): IMZ/WLZ, defrag and resize, boot sector editing, VHD/VHDX/VMDK, GPT, ISO, physical drives.
+Verified against other software: the WinImage SDK reads images made here (IMA, IMZ, VHD fixed/dynamic,
+VMDK sparse/flat, MBR and GPT disks, defragmented and resized images) with byte-identical files,
+and SectorZero reads the SDK's VHD and VMDK output. Windows mounts the ISO images. VHDX is
+checked by this project's own tests only so far.
+
+Not yet (see RESEARCH.md §5): physical drives and floppy drives, encrypted IMZ, exFAT/NTFS, VDI/QCOW2,
+writing to ISO images, resizing partitioned disks.
 
 ## Layout
 
 ```
-crates/sectorzero-core   the engine (library): containers, partitions, FAT operations
-crates/sectorzero-cli                 command-line tool
-app/                       Tauri 2 desktop app (Rust shell in src-tauri/, plain HTML/JS UI in ui/)
+crates/sectorzero-core   the engine (library): containers, partitions, file systems, tools
+crates/sectorzero-cli    command-line tool, installed as `s0`
+app/                     Tauri 2 desktop app (Rust shell in src-tauri/, plain HTML/JS UI in ui/)
+third_party/fatfs        vendored fatfs 0.3.6 with one fix (see SECTORZERO-PATCH.md there)
 ```
 
 ## Building (Windows)
@@ -59,16 +68,26 @@ npm run build    # release build and NSIS installer
 ```powershell
 s0 formats                                   # list floppy formats
 s0 new boot.ima -f 1440 -l MYDISK            # new empty 1.44 MB floppy
-s0 new data.img -s 64M                       # new bare FAT16 volume
+s0 new boot.imz -f 1440                      # same, WinImage-compressed
+s0 new data.img -s 64M -t none               # bare FAT16 volume
+s0 new disk.vhdx -s 2G -t gpt -l DATA        # dynamic VHDX with a GPT partition (--fixed for fixed size)
 s0 inject boot.ima .\files\* --to /tools     # copy files in (folders recurse)
 s0 ls boot.ima -r                            # list everything
 s0 extract boot.ima /tools -o .\out          # copy out (no path = everything)
 s0 rm boot.ima /tools -r
 s0 mv boot.ima /a.txt /b.txt
-s0 info disk.img -p 2                        # partition 2 of an MBR disk
+s0 info disk.vhd -p 2                        # partition 2 of an MBR or GPT disk
+s0 label boot.ima NEWLABEL                   # or --clear
+s0 boot boot.ima --serial 1A2B-3C4D --oem MSWIN4.1
+s0 boot boot.ima --export bs.bin             # --import copies boot code, keeps the BPB; --mbr for the MBR
+s0 defrag boot.ima --zero-free               # --analyze only reports
+s0 resize boot.ima -f 2880                   # or -s 32M; files are kept
+s0 convert boot.ima boot.vhdx                # container from the extension, or -c raw|imz|vhd|vhdx|vmdk
+s0 iso .\cdroot cd.iso -l MYCD -b boot.ima   # bootable ISO (--efi, --no-emulation)
+s0 boot-image cd.iso -o boot.ima
 ```
 
-Add `--json` to any command for machine-readable output.
+Add `--json` to any command for machine-readable output. For WLZ files, `--member` picks the image.
 
 ## License policy
 

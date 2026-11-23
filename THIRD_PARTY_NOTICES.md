@@ -3,9 +3,23 @@
 SectorZero is MIT-licensed. This file credits third-party code that is reused, ported,
 or shipped with the program.
 
+## Vendored and modified code
+
+- **fatfs 0.3.6** (https://github.com/rafalh/rust-fatfs), MIT, Copyright (c) 2017 Rafał Harabień.
+  A copy lives in `third_party/fatfs` with its original LICENSE.txt and is used through
+  `[patch.crates-io]`. It is changed so that new folders start with plain `.` and `..` entries
+  (upstream writes long-name entries before them, which WinImage and DOS reject). Details in
+  `third_party/fatfs/SECTORZERO-PATCH.md`.
+
 ## Ported or adapted code
 
-None yet. When code is ported from another project (for example DiscUtils or TotalImage,
+None. Containers, partition tables, FAT tools (defrag, boot sector, resize) and ISO 9660 are
+written from the published specifications: Microsoft's FAT specification, the VHD and VHDX
+specifications (MS-VHDX), VMware's Virtual Disk Format 1.1, UEFI (GPT), ECMA-119 (ISO 9660),
+Joliet, Rock Ridge (IEEE P1282) and El Torito. The WinImage SDK was used only as an external
+test oracle on a developer machine. None of it is in this repository or linked into the program.
+
+When code is ported from another project (for example DiscUtils or TotalImage,
 both MIT), add an entry here with the project, its URL, its license and copyright line,
 and the files affected. Also keep the original copyright notice in those files.
 
@@ -13,7 +27,11 @@ and the files affected. Also keep the original copyright notice in those files.
 
 | Crate | Used for | License |
 |---|---|---|
-| [fatfs](https://github.com/rafalh/rust-fatfs) 0.3 | FAT12/16/32 engine | MIT |
+| [fatfs](https://github.com/rafalh/rust-fatfs) 0.3 (vendored, see above) | FAT12/16/32 engine | MIT |
+| [zip](https://github.com/zip-rs/zip2) | IMZ and WLZ containers | MIT |
+| [crc32fast](https://github.com/srijs/rust-crc32fast) | GPT checksums | MIT OR Apache-2.0 |
+| [uuid](https://github.com/uuid-rs/uuid) | GPT, VHD and VHDX identifiers | MIT OR Apache-2.0 |
+| [tempfile](https://github.com/Stebalien/tempfile) | Scratch images for change format | MIT OR Apache-2.0 |
 | [chrono](https://github.com/chronotope/chrono) | Timestamp conversion | MIT OR Apache-2.0 |
 | [thiserror](https://github.com/dtolnay/thiserror) | Error types | MIT OR Apache-2.0 |
 | [serde](https://github.com/serde-rs/serde) / serde_json | Data passed to the CLI's JSON output and the UI | MIT OR Apache-2.0 |
@@ -23,7 +41,8 @@ and the files affected. Also keep the original copyright notice in those files.
 
 ## Transitive dependencies
 
-As of 2026-11-22, the full dependency tree has no GPL, LGPL or AGPL crates. Most crates are
+As of 2026-11-22, the full dependency tree has no GPL, LGPL or AGPL-only crates. (r-efi is
+offered under MIT OR Apache-2.0 OR LGPL-2.1-or-later; it is used under MIT.) Most crates are
 MIT and/or Apache-2.0. The others:
 
 - **MPL-2.0** (cssparser, selectors, dtoa-short, option-ext). These are pulled in by Tauri.

@@ -185,3 +185,39 @@ dialog menu { display: flex; justify-content: flex-end; gap: 6px; margin: 14px 0
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
 dt { color: var(--muted); }
 dd { margin: 0; user-select: text; font-variant-numeric: tabular-nums; }
+
+/* Toolbar partition picker */
+.toolbar .part { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); }
+.toolbar .part select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  max-width: 320px;
+}
+
+/* Dialog extras */
+dialog .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+dialog .hint:empty { display: none; }
+#textDlg .hint { margin: 6px 0 0; white-space: pre-line; }
+dialog fieldset.choice { display: flex; gap: 18px; border: none; padding: 0; margin: 0 0 12px; }
+dialog fieldset.choice label, dialog label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  margin: 0;
+}
+dialog label.check { margin-bottom: 10px; }
+dialog input[type="radio"], dialog input[type="checkbox"] { display: inline-block; width: auto; margin: 0; }
+dialog input:disabled, dialog select:disabled { opacity: 0.5; }
+dialog label.check:has(input:disabled) { color: var(--muted); }
+dialog .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; margin-top: 14px; }
+dialog .row { display: flex; gap: 6px; margin-top: 4px; }
+dialog .row input { margin-top: 0; flex: 1; min-width: 0; }
+dialog .row button { flex: none; }
+dialog menu .spacer { flex: 1; }
+dialog dl { margin-bottom: 4px; }
+#infoDlg dd, #bootList dd { word-break: break-all; }

@@ -1,0 +1,712 @@
+//! VMware virtual disks (VMDK), per VMware's published "Virtual Disk Format 1.1".
+//!
+//! A disk is a text descriptor plus extents. Hosted sparse extents start with a `KDMV`
+//! header and map grains (usually 64 KiB) through a grain directory of grain tables, with a
+//! redundant copy of both. `monolithicSparse` embeds the descriptor in the sparse file;
+//! `monolithicFlat` keeps it in a small text file next to a `-flat.vmdk` raw extent.
+//! Supported extents: SPARSE (uncompressed), FLAT/VMFS and ZERO. Linked clones
+//! (parentCID other than ffffffff) and stream-optimized (compressed) disks are not.
+
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{self, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+use super::{ContainerInfo, ContainerKind, Disk, read_up_to};
+use crate::error::{Error, Result};
+use crate::util::*;
+
+const SECTOR: u64 = 512;
+const GRAIN_SECTORS: u64 = 128;
+const GTES: u64 = 512;
+const DESCRIPTOR_SECTORS: u64 = 20;
+
+struct Sparse {
+    file: File,
+    grain: u64,
+    gtes: u64,
+    gd_offset: u64,
+    rgd_offset: Option<u64>,
+    gd: Vec<u32>,
+    rgd: Vec<u32>,
+    tables: HashMap<usize, Vec<u32>>,
+    rtables: HashMap<usize, Vec<u32>>,
+    file_len: u64,
+}
+
+enum Kind {
+    Flat { file: File, base: u64 },
+    Sparse(Box<Sparse>),
+    Zero,
+}
+
+struct Extent {
+    start: u64,
+    len: u64,
+    writable: bool,
+    kind: Kind,
+}
+
+pub(crate) struct VmdkDisk {
+    extents: Vec<Extent>,
+    size: u64,
+    create_type: String,
+}
+
+/// Whether the start of a file looks like a VMDK text descriptor.
+pub(crate) fn looks_like_descriptor(head: &[u8]) -> bool {
+    let text_len = head.iter().position(|&b| b == 0).unwrap_or(head.len());
+    let text = &head[..text_len];
+    if text.len() < 20 || text.iter().any(|&b| b < 9 || (b > 13 && b < 32 && b != 27)) {
+        return false;
+    }
+    let s = String::from_utf8_lossy(text);
+    s.contains("createType")
+        && (s.contains("# Disk DescriptorFile") || s.contains("RW ") || s.contains("RDONLY "))
+}
+
+struct Descriptor {
+    create_type: String,
+    parent_cid: String,
+    extents: Vec<(String, u64, String, Option<String>, u64)>,
+}
+
+fn parse_descriptor(text: &str) -> Result<Descriptor> {
+    let mut d = Descriptor {
+        create_type: String::new(),
+        parent_cid: "ffffffff".into(),
+        extents: vec![],
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let first = line.split_whitespace().next().unwrap_or("");
+        if matches!(first, "RW" | "RDONLY" | "NOACCESS") {
+            let mut rest = line[first.len()..].trim_start();
+            let sectors_tok = rest.split_whitespace().next().unwrap_or("");
+            let sectors: u64 = sectors_tok
+                .parse()
+                .map_err(|_| Error::Invalid(format!("bad VMDK extent line: {line}")))?;
+            rest = rest[sectors_tok.len()..].trim_start();
+            let kind = rest.split_whitespace().next().unwrap_or("").to_string();
+            rest = rest[kind.len()..].trim_start();
+            let mut name = None;
+            if let Some(r) = rest.strip_prefix('"') {
+                let end = r
+                    .find('"')
+                    .ok_or_else(|| Error::Invalid(format!("bad VMDK extent line: {line}")))?;
+                name = Some(r[..end].to_string());
+                rest = r[end + 1..].trim_start();
+            }
+            let offset = rest
+                .split_whitespace()
+                .next()
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(0);
+            d.extents
+                .push((first.to_string(), sectors, kind, name, offset));
+        } else if let Some((k, v)) = line.split_once('=') {
+            let v = v.trim().trim_matches('"').to_string();
+            match k.trim() {
+                "createType" => d.create_type = v,
+                "parentCID" => d.parent_cid = v.to_ascii_lowercase(),
+                _ => {}
+            }
+        }
+    }
+    if d.parent_cid != "ffffffff" {
+        return Err(Error::Unsupported(
+            "VMDK linked clones / snapshots (needs the parent disk)".into(),
+        ));
+    }
+    if d.extents.is_empty() {
+        return Err(Error::Invalid("VMDK descriptor lists no extents".into()));
+    }
+    Ok(d)
+}
+
+fn read_u32s(file: &mut File, offset: u64, count: usize) -> io::Result<Vec<u32>> {
+    let mut raw = vec![0u8; count * 4];
+    let got = read_up_to(file, offset, &mut raw)?;
+    raw[got..].fill(0);
+    Ok(raw.chunks(4).map(|c| le32(c, 0)).collect())
+}
+
+fn write_at(file: &mut File, offset: u64, data: &[u8]) -> io::Result<()> {
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(data)
+}
+
+/// Parse a KDMV header; returns the sparse extent plus (descriptor offset, size) in bytes.
+fn open_sparse(mut file: File) -> Result<(Sparse, u64, u64, u64)> {
+    let mut h = [0u8; 512];
+    read_up_to(&mut file, 0, &mut h)?;
+    if &h[0..4] != b"KDMV" {
+        return Err(Error::Invalid("VMDK sparse header not found".into()));
+    }
+    let version = le32(&h, 4);
+    let flags = le32(&h, 8);
+    if version > 3 {
+        return Err(Error::Unsupported(format!("VMDK sparse version {version}")));
+    }
+    if flags & (1 << 16) != 0 || le16(&h, 77) != 0 {
+        return Err(Error::Unsupported(
+            "stream-optimized (compressed) VMDK".into(),
+        ));
+    }
+    let capacity = le64(&h, 12);
+    let grain = le64(&h, 20);
+    let gtes = u64::from(le32(&h, 44));
+    let mut gd_offset = le64(&h, 56);
+    let mut rgd_offset = (flags & 2 != 0).then(|| le64(&h, 48));
+    if gd_offset == u64::MAX {
+        return Err(Error::Unsupported(
+            "VMDK with the grain directory at the end (stream-optimized)".into(),
+        ));
+    }
+    if grain == 0 || gtes == 0 || !grain.is_power_of_two() {
+        return Err(Error::Invalid("VMDK sparse header is invalid".into()));
+    }
+    let gd_count = capacity.div_ceil(grain * gtes) as usize;
+    if rgd_offset == Some(0) {
+        rgd_offset = None;
+    }
+    if gd_offset == 0 {
+        // Only the redundant directory is valid in some old files.
+        gd_offset = rgd_offset
+            .take()
+            .ok_or_else(|| Error::Invalid("VMDK has no grain directory".into()))?;
+    }
+    let gd = read_u32s(&mut file, gd_offset * SECTOR, gd_count)?;
+    let rgd = match rgd_offset {
+        Some(o) => read_u32s(&mut file, o * SECTOR, gd_count)?,
+        None => vec![],
+    };
+    let file_len = file.metadata()?.len();
+    let s = Sparse {
+        file,
+        grain: grain * SECTOR,
+        gtes,
+        gd_offset,
+        rgd_offset,
+        gd,
+        rgd,
+        tables: HashMap::new(),
+        rtables: HashMap::new(),
+        file_len,
+    };
+    Ok((
+        s,
+        capacity * SECTOR,
+        le64(&h, 28) * SECTOR,
+        le64(&h, 36) * SECTOR,
+    ))
+}
+
+impl Sparse {
+    /// File offset of the grain holding virtual `offset`, or None when unallocated.
+    fn lookup(&mut self, offset: u64) -> io::Result<Option<u64>> {
+        let g = offset / self.grain;
+        let (di, ti) = ((g / self.gtes) as usize, (g % self.gtes) as usize);
+        let Some(&gde) = self.gd.get(di) else {
+            return Ok(None);
+        };
+        if gde == 0 {
+            return Ok(None);
+        }
+        if !self.tables.contains_key(&di) {
+            let t = read_u32s(&mut self.file, u64::from(gde) * SECTOR, self.gtes as usize)?;
+            self.tables.insert(di, t);
+        }
+        let gte = self.tables[&di][ti];
+        // 0: never written; 1: explicitly zeroed grain.
+        Ok((gte > 1).then(|| u64::from(gte) * SECTOR))
+    }
+
+    fn append(&mut self, len: u64) -> io::Result<u64> {
+        let start = round_up(self.file_len, SECTOR);
+        self.file_len = start + len;
+        self.file.set_len(self.file_len)?;
+        Ok(start)
+    }
+
+    fn table(&mut self, redundant: bool, di: usize) -> io::Result<&mut Vec<u32>> {
+        let (dir, map) = if redundant {
+            (&self.rgd, &mut self.rtables)
+        } else {
+            (&self.gd, &mut self.tables)
+        };
+        if let std::collections::hash_map::Entry::Vacant(e) = map.entry(di) {
+            let t = read_u32s(
+                &mut self.file,
+                u64::from(dir[di]) * SECTOR,
+                self.gtes as usize,
+            )?;
+            e.insert(t);
+        }
+        Ok(map.get_mut(&di).unwrap())
+    }
+
+    /// Allocate a zeroed grain for virtual `offset` and record it in both grain tables.
+    fn allocate(&mut self, offset: u64) -> io::Result<u64> {
+        let g = offset / self.grain;
+        let (di, ti) = ((g / self.gtes) as usize, (g % self.gtes) as usize);
+        let gt_bytes = round_up(self.gtes * 4, SECTOR);
+        for redundant in [false, true] {
+            if redundant && self.rgd_offset.is_none() {
+                continue;
+            }
+            let dir_entry = if redundant { self.rgd[di] } else { self.gd[di] };
+            if dir_entry == 0 {
+                let at = self.append(gt_bytes)?;
+                let sector = (at / SECTOR) as u32;
+                let dir_off = if redundant {
+                    self.rgd_offset.unwrap()
+                } else {
+                    self.gd_offset
+                };
+                write_at(
+                    &mut self.file,
+                    dir_off * SECTOR + di as u64 * 4,
+                    &sector.to_le_bytes(),
+                )?;
+                if redundant {
+                    self.rgd[di] = sector;
+                    self.rtables.insert(di, vec![0; self.gtes as usize]);
+                } else {
+                    self.gd[di] = sector;
+                    self.tables.insert(di, vec![0; self.gtes as usize]);
+                }
+            }
+        }
+        let start = self.append(self.grain)?;
+        let sector = (start / SECTOR) as u32;
+        for redundant in [false, true] {
+            if redundant && self.rgd_offset.is_none() {
+                continue;
+            }
+            let dir_entry = if redundant { self.rgd[di] } else { self.gd[di] };
+            self.table(redundant, di)?[ti] = sector;
+            write_at(
+                &mut self.file,
+                u64::from(dir_entry) * SECTOR + ti as u64 * 4,
+                &sector.to_le_bytes(),
+            )?;
+        }
+        Ok(start)
+    }
+}
+
+impl VmdkDisk {
+    pub(crate) fn open(path: &Path, writable: bool) -> Result<Self> {
+        let mut file = File::options().read(true).write(writable).open(path)?;
+        let mut magic = [0u8; 4];
+        read_up_to(&mut file, 0, &mut magic)?;
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let self_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+
+        let mut own_sparse = None;
+        let descriptor_text = if &magic == b"KDMV" {
+            let (sparse, capacity, d_off, d_len) = open_sparse(file)?;
+            let text = if d_off > 0 && d_len > 0 {
+                let mut f = sparse.file.try_clone()?;
+                let mut t = vec![0u8; d_len as usize];
+                read_up_to(&mut f, d_off, &mut t)?;
+                let end = t.iter().position(|&b| b == 0).unwrap_or(t.len());
+                Some(String::from_utf8_lossy(&t[..end]).into_owned())
+            } else {
+                None
+            };
+            own_sparse = Some((sparse, capacity));
+            text
+        } else {
+            let len = file.metadata()?.len();
+            if len > 1024 * 1024 {
+                return Err(Error::Invalid("VMDK descriptor is too large".into()));
+            }
+            let mut t = vec![0u8; len as usize];
+            read_up_to(&mut file, 0, &mut t)?;
+            Some(String::from_utf8_lossy(&t).into_owned())
+        };
+
+        let Some(text) = descriptor_text else {
+            // A bare sparse extent without a descriptor.
+            let (sparse, capacity) = own_sparse.unwrap();
+            return Ok(VmdkDisk {
+                extents: vec![Extent {
+                    start: 0,
+                    len: capacity,
+                    writable,
+                    kind: Kind::Sparse(Box::new(sparse)),
+                }],
+                size: capacity,
+                create_type: "monolithicSparse".into(),
+            });
+        };
+        let d = parse_descriptor(&text)?;
+        if d.create_type.eq_ignore_ascii_case("streamOptimized") {
+            return Err(Error::Unsupported(
+                "stream-optimized (compressed) VMDK".into(),
+            ));
+        }
+        let single_sparse = own_sparse.is_some()
+            && d.extents
+                .iter()
+                .filter(|e| e.2.eq_ignore_ascii_case("SPARSE"))
+                .count()
+                == 1;
+        let mut extents = Vec::new();
+        let mut start = 0u64;
+        for (access, sectors, kind, name, offset) in d.extents {
+            let len = sectors * SECTOR;
+            let ext_writable = writable && access == "RW";
+            if access == "NOACCESS" {
+                return Err(Error::Unsupported("VMDK NOACCESS extents".into()));
+            }
+            let resolve = |name: &Option<String>| -> Result<PathBuf> {
+                let n = name
+                    .as_ref()
+                    .ok_or_else(|| Error::Invalid("VMDK extent without a file name".into()))?;
+                Ok(dir.join(n))
+            };
+            let kind = match kind.to_ascii_uppercase().as_str() {
+                "ZERO" => Kind::Zero,
+                "FLAT" | "VMFS" => {
+                    let p = resolve(&name)?;
+                    let f = File::options()
+                        .read(true)
+                        .write(ext_writable)
+                        .open(&p)
+                        .map_err(|e| {
+                            Error::Invalid(format!("cannot open VMDK extent {}: {e}", p.display()))
+                        })?;
+                    Kind::Flat {
+                        file: f,
+                        base: offset * SECTOR,
+                    }
+                }
+                "SPARSE" => {
+                    // An embedded descriptor's single SPARSE extent is the file itself, even
+                    // if the file was renamed since.
+                    let is_self = single_sparse
+                        || name.as_ref().is_some_and(|n| {
+                            Path::new(n)
+                                .file_name()
+                                .map(|x| x.to_string_lossy().to_ascii_lowercase())
+                                == Some(self_name.clone())
+                        });
+                    let sparse = match (is_self, own_sparse.take()) {
+                        (true, Some((s, _))) => s,
+                        (_, other) => {
+                            own_sparse = other;
+                            let p = resolve(&name)?;
+                            let f = File::options()
+                                .read(true)
+                                .write(ext_writable)
+                                .open(&p)
+                                .map_err(|e| {
+                                    Error::Invalid(format!(
+                                        "cannot open VMDK extent {}: {e}",
+                                        p.display()
+                                    ))
+                                })?;
+                            open_sparse(f)?.0
+                        }
+                    };
+                    Kind::Sparse(Box::new(sparse))
+                }
+                other => return Err(Error::Unsupported(format!("VMDK {other} extents"))),
+            };
+            extents.push(Extent {
+                start,
+                len,
+                writable: ext_writable,
+                kind,
+            });
+            start += len;
+        }
+        Ok(VmdkDisk {
+            extents,
+            size: start,
+            create_type: d.create_type,
+        })
+    }
+
+    pub(crate) fn create(path: &Path, size: u64, dynamic: bool) -> Result<Self> {
+        let sectors = size / SECTOR;
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "disk".into());
+        let file_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if dynamic {
+            let desc = descriptor("monolithicSparse", sectors, "SPARSE", &file_name, None);
+            let gd_count = sectors.div_ceil(GRAIN_SECTORS * GTES);
+            let gd_sectors = (gd_count * 4).div_ceil(SECTOR);
+            let gt_sectors = (GTES * 4).div_ceil(SECTOR);
+            let rgd = 1 + DESCRIPTOR_SECTORS;
+            let rgts = rgd + gd_sectors;
+            let gd = rgts + gd_count * gt_sectors;
+            let gts = gd + gd_sectors;
+            let overhead = round_up(gts + gd_count * gt_sectors, GRAIN_SECTORS);
+
+            let mut h = [0u8; 512];
+            h[0..4].copy_from_slice(b"KDMV");
+            put_le32(&mut h, 4, 1);
+            put_le32(&mut h, 8, 3);
+            put_le64(&mut h, 12, sectors);
+            put_le64(&mut h, 20, GRAIN_SECTORS);
+            put_le64(&mut h, 28, 1);
+            put_le64(&mut h, 36, DESCRIPTOR_SECTORS);
+            put_le32(&mut h, 44, GTES as u32);
+            put_le64(&mut h, 48, rgd);
+            put_le64(&mut h, 56, gd);
+            put_le64(&mut h, 64, overhead);
+            h[73] = b'\n';
+            h[74] = b' ';
+            h[75] = b'\r';
+            h[76] = b'\n';
+
+            let mut meta = vec![0u8; (overhead * SECTOR) as usize];
+            meta[..512].copy_from_slice(&h);
+            if desc.len() > (DESCRIPTOR_SECTORS * SECTOR) as usize {
+                return Err(Error::Invalid("VMDK descriptor too long".into()));
+            }
+            meta[512..512 + desc.len()].copy_from_slice(desc.as_bytes());
+            for (dir, tables) in [(rgd, rgts), (gd, gts)] {
+                for i in 0..gd_count {
+                    put_le32(
+                        &mut meta,
+                        (dir * SECTOR + i * 4) as usize,
+                        (tables + i * gt_sectors) as u32,
+                    );
+                }
+            }
+            let mut file = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)?;
+            file.write_all(&meta)?;
+            file.sync_all()?;
+        } else {
+            let flat_name = format!("{stem}-flat.vmdk");
+            let flat = path.with_file_name(&flat_name);
+            let f = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&flat)?;
+            f.set_len(size)?;
+            let desc = descriptor("monolithicFlat", sectors, "FLAT", &flat_name, Some(0));
+            std::fs::write(path, desc)?;
+        }
+        Self::open(path, true)
+    }
+
+    fn extent(&mut self, offset: u64) -> Option<&mut Extent> {
+        self.extents
+            .iter_mut()
+            .find(|e| offset >= e.start && offset < e.start + e.len)
+    }
+}
+
+fn descriptor(
+    create_type: &str,
+    sectors: u64,
+    kind: &str,
+    name: &str,
+    offset: Option<u64>,
+) -> String {
+    let cid = u32::from_le_bytes(new_guid()[0..4].try_into().unwrap());
+    let cylinders = (sectors / (16 * 63)).clamp(1, 16383);
+    let offset = offset.map(|o| format!(" {o}")).unwrap_or_default();
+    format!(
+        "# Disk DescriptorFile\nversion=1\nencoding=\"UTF-8\"\nCID={cid:08x}\nparentCID=ffffffff\n\
+         createType=\"{create_type}\"\n\n# Extent description\nRW {sectors} {kind} \"{name}\"{offset}\n\n\
+         # The Disk Data Base\n#DDB\n\nddb.virtualHWVersion = \"4\"\nddb.adapterType = \"ide\"\n\
+         ddb.geometry.cylinders = \"{cylinders}\"\nddb.geometry.heads = \"16\"\nddb.geometry.sectors = \"63\"\n\
+         ddb.toolsVersion = \"0\"\n"
+    )
+}
+
+impl Disk for VmdkDisk {
+    fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn read_at(&mut self, mut offset: u64, mut buf: &mut [u8]) -> io::Result<()> {
+        while !buf.is_empty() {
+            let Some(e) = self.extent(offset) else {
+                buf.fill(0);
+                break;
+            };
+            let within = offset - e.start;
+            let mut n = (buf.len() as u64).min(e.len - within) as usize;
+            match &mut e.kind {
+                Kind::Zero => buf[..n].fill(0),
+                Kind::Flat { file, base } => {
+                    let got = read_up_to(file, *base + within, &mut buf[..n])?;
+                    buf[got..n].fill(0);
+                }
+                Kind::Sparse(s) => {
+                    n = n.min((s.grain - within % s.grain) as usize);
+                    match s.lookup(within)? {
+                        Some(at) => {
+                            let got =
+                                read_up_to(&mut s.file, at + within % s.grain, &mut buf[..n])?;
+                            buf[got..n].fill(0);
+                        }
+                        None => buf[..n].fill(0),
+                    }
+                }
+            }
+            offset += n as u64;
+            buf = &mut buf[n..];
+        }
+        Ok(())
+    }
+
+    fn write_at(&mut self, mut offset: u64, mut buf: &[u8]) -> io::Result<()> {
+        if offset + buf.len() as u64 > self.size {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "write past the end of the VMDK",
+            ));
+        }
+        while !buf.is_empty() {
+            let e = self.extent(offset).expect("offset within the disk");
+            if !e.writable {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "VMDK extent is read-only",
+                ));
+            }
+            let within = offset - e.start;
+            let mut n = (buf.len() as u64).min(e.len - within) as usize;
+            match &mut e.kind {
+                Kind::Zero => {
+                    if !is_zero(&buf[..n]) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "VMDK ZERO extents are read-only",
+                        ));
+                    }
+                }
+                Kind::Flat { file, base } => write_at(file, *base + within, &buf[..n])?,
+                Kind::Sparse(s) => {
+                    n = n.min((s.grain - within % s.grain) as usize);
+                    let at = match s.lookup(within)? {
+                        Some(at) => Some(at),
+                        None if is_zero(&buf[..n]) => None,
+                        None => Some(s.allocate(within)?),
+                    };
+                    if let Some(at) = at {
+                        write_at(&mut s.file, at + within % s.grain, &buf[..n])?;
+                    }
+                }
+            }
+            offset += n as u64;
+            buf = &buf[n..];
+        }
+        Ok(())
+    }
+
+    fn sync(&mut self) -> io::Result<()> {
+        for e in &mut self.extents {
+            match &mut e.kind {
+                Kind::Flat { file, .. } => file.flush()?,
+                Kind::Sparse(s) => s.file.flush()?,
+                Kind::Zero => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn info(&self) -> ContainerInfo {
+        ContainerInfo::simple(ContainerKind::Vmdk, &self.create_type, self.size)
+    }
+
+    fn is_allocated(&mut self, offset: u64, len: u64) -> io::Result<bool> {
+        let end = offset + len.max(1);
+        let mut pos = offset;
+        while pos < end {
+            let Some(e) = self.extent(pos) else {
+                return Ok(false);
+            };
+            let within = pos - e.start;
+            match &mut e.kind {
+                Kind::Zero => pos = e.start + e.len,
+                Kind::Flat { .. } => return Ok(true),
+                Kind::Sparse(s) => {
+                    if s.lookup(within)?.is_some() {
+                        return Ok(true);
+                    }
+                    pos += s.grain - within % s.grain;
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_and_flat_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        for dynamic in [true, false] {
+            let p = dir.path().join(format!("d{dynamic}.vmdk"));
+            let size = 1_474_560;
+            let mut d = VmdkDisk::create(&p, size, dynamic).unwrap();
+            d.write_at(65_000, &[0x5A; 2000]).unwrap();
+            d.write_at(size - 512, &[0x11; 512]).unwrap();
+            d.sync().unwrap();
+            drop(d);
+            let mut d = VmdkDisk::open(&p, false).unwrap();
+            assert_eq!(d.size(), size);
+            assert_eq!(
+                d.info().variant,
+                if dynamic {
+                    "monolithicSparse"
+                } else {
+                    "monolithicFlat"
+                }
+            );
+            let mut b = vec![0u8; 2100];
+            d.read_at(64_950, &mut b).unwrap();
+            assert!(b[..50].iter().all(|&x| x == 0));
+            assert!(b[50..2050].iter().all(|&x| x == 0x5A));
+            assert!(b[2050..].iter().all(|&x| x == 0));
+            let mut b = [0u8; 512];
+            d.read_at(size - 512, &mut b).unwrap();
+            assert!(b.iter().all(|&x| x == 0x11));
+            if dynamic {
+                assert!(!d.is_allocated(262_144, 65_536).unwrap());
+                assert!(d.is_allocated(65_536, 1).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn descriptor_detection() {
+        let d = descriptor("monolithicFlat", 100, "FLAT", "x-flat.vmdk", Some(0));
+        assert!(looks_like_descriptor(d.as_bytes()));
+        assert!(!looks_like_descriptor(&[0xEB, 0x3C, 0x90, 0, 0]));
+        let parsed = parse_descriptor(&d).unwrap();
+        assert_eq!(parsed.extents[0].1, 100);
+        assert_eq!(parsed.extents[0].3.as_deref(), Some("x-flat.vmdk"));
+    }
+}

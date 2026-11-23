@@ -14,18 +14,30 @@
       <button id="btnClose" data-needs-image title="Close the image">Close</button>
     </div>
     <div class="group">
-      <button id="btnInject" data-needs-image title="Copy files into the image (Ins)">Inject files</button>
-      <button id="btnInjectDir" data-needs-image title="Copy a folder into the image">Inject folder</button>
+      <button id="btnInject" data-needs-writable title="Copy files into the image (Ins)">Inject files</button>
+      <button id="btnInjectDir" data-needs-writable title="Copy a folder into the image">Inject folder</button>
       <button id="btnExtract" data-needs-image title="Copy the selection out (or everything if nothing is selected)">Extract</button>
     </div>
     <div class="group">
-      <button id="btnMkdir" data-needs-image title="New folder">New folder</button>
-      <button id="btnRename" data-needs-selection title="Rename (F2)">Rename</button>
-      <button id="btnDelete" data-needs-selection title="Delete (Del)">Delete</button>
+      <button id="btnMkdir" data-needs-writable title="New folder">New folder</button>
+      <button id="btnRename" data-needs-selection data-needs-writable title="Rename (F2)">Rename</button>
+      <button id="btnDelete" data-needs-selection data-needs-writable title="Delete (Del)">Delete</button>
     </div>
     <div class="group">
+      <button id="btnLabel" data-needs-writable title="Change the volume label">Label</button>
+      <button id="btnBoot" data-needs-writable title="Boot sector properties, import and export">Boot sector</button>
+      <button id="btnDefrag" data-needs-writable title="Defragment the image">Defrag</button>
+      <button id="btnFormat" data-needs-writable title="Change the format or size of a floppy / volume image">Change format</button>
+      <button id="btnBootImage" data-needs-image hidden title="Save the El Torito boot image of this ISO">Boot image</button>
+    </div>
+    <div class="group">
+      <button id="btnSaveAs" data-needs-image title="Save a copy as IMA, IMZ, VHD, VHDX or VMDK">Save as…</button>
+      <button id="btnIso" title="Build an ISO image from a folder">Build ISO</button>
       <button id="btnInfo" data-needs-image title="Image information">Info</button>
     </div>
+    <label class="part" id="partWrap" hidden>Partition
+      <select id="partSel" aria-label="Partition"></select>
+    </label>
   </header>
 
   <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
@@ -34,7 +46,8 @@
     <section class="empty" id="empty">
       <h1>SectorZero</h1>
       <p>Drop a disk image here, or use <strong>Open</strong> or <strong>New</strong>.</p>
-      <p class="hint">Supported now: raw floppy and disk images (.ima .img .vfd .flp .dsk) with FAT12/16/32, bare or MBR-partitioned.</p>
+      <p class="hint">Opens raw images (.ima .img .vfd .flp .dsk), WinImage IMZ/WLZ, VHD, VHDX and VMDK (bare FAT volumes,
+        MBR or GPT disks) and ISO 9660/Joliet CD images.</p>
     </section>
     <table class="files" id="files" hidden>
       <thead>
@@ -53,9 +66,33 @@
   <dialog id="newDlg">
     <form method="dialog">
       <h2>New image</h2>
-      <label>Format
+      <fieldset class="choice">
+        <label><input type="radio" name="newKind" value="floppy" checked> Floppy</label>
+        <label><input type="radio" name="newKind" value="disk"> Hard disk / volume</label>
+      </fieldset>
+      <label data-kind="floppy">Format
         <select id="newFormat"></select>
       </label>
+      <label data-kind="disk" hidden>Size (MB)
+        <input id="newSize" type="number" min="2" step="1" value="512">
+      </label>
+      <label data-kind="disk" hidden>Partition table
+        <select id="newScheme">
+          <option value="none">None (one FAT volume)</option>
+          <option value="mbr" selected>MBR</option>
+          <option value="gpt">GPT</option>
+        </select>
+      </label>
+      <label>Container
+        <select id="newContainer">
+          <option value="raw">Raw image (.ima / .img)</option>
+          <option value="imz">WinImage compressed (.imz)</option>
+          <option value="vhd">Virtual Hard Disk (.vhd)</option>
+          <option value="vhdx">Virtual Hard Disk v2 (.vhdx)</option>
+          <option value="vmdk">VMware disk (.vmdk)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="newDynamic" checked> Dynamic (grows as data is written; VHD, VHDX, VMDK)</label>
       <label>Volume label (optional, up to 11 characters)
         <input id="newLabel" maxlength="11" autocomplete="off" spellcheck="false">
       </label>
@@ -69,7 +106,8 @@
   <dialog id="textDlg">
     <form method="dialog">
       <h2 id="textTitle"></h2>
-      <input id="textInput" autocomplete="off" spellcheck="false" required>
+      <input id="textInput" autocomplete="off" spellcheck="false">
+      <p class="hint" id="textHint"></p>
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button value="ok" class="primary">OK</button>
@@ -82,6 +120,93 @@
       <h2>Image information</h2>
       <dl id="infoList"></dl>
       <menu><button value="ok" class="primary">Close</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="bootDlg">
+    <form method="dialog">
+      <h2>Boot sector</h2>
+      <dl id="bootList"></dl>
+      <div class="grid">
+        <label>OEM name <input id="bootOem" maxlength="8" spellcheck="false"></label>
+        <label>Serial number <input id="bootSerial" maxlength="9" spellcheck="false" placeholder="1A2B-3C4D"></label>
+        <label>Sectors per track <input id="bootSpt" type="number" min="0" max="65535"></label>
+        <label>Heads <input id="bootHeads" type="number" min="0" max="65535"></label>
+        <label>Hidden sectors <input id="bootHidden" type="number" min="0"></label>
+        <label>Drive number <input id="bootDrive" spellcheck="false" placeholder="0x80"></label>
+      </div>
+      <menu>
+        <button value="export" formnovalidate>Export…</button>
+        <button value="import" formnovalidate title="Load boot code from a file; the BPB (disk geometry) of this image is kept">Import boot code…</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate>Close</button>
+        <button value="save" class="primary">Save changes</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="defragDlg">
+    <form method="dialog">
+      <h2>Defragment</h2>
+      <dl id="defragList"></dl>
+      <label class="check"><input type="checkbox" id="defragZero" checked> Clear free space (smaller IMZ files)</label>
+      <menu>
+        <button value="cancel" formnovalidate>Close</button>
+        <button value="ok" class="primary" id="defragGo">Defragment</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="formatDlg">
+    <form method="dialog">
+      <h2>Change format</h2>
+      <p class="hint">Rebuilds the image in a new format, keeping files, dates, attributes, label, serial number and boot code.</p>
+      <label>New format
+        <select id="formatSel"></select>
+      </label>
+      <label id="formatSizeWrap" hidden>Size (MB)
+        <input id="formatSize" type="number" min="1" step="1" value="64">
+      </label>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">Change format</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="saveAsDlg">
+    <form method="dialog">
+      <h2>Save a copy as</h2>
+      <label>Container
+        <select id="saveContainer">
+          <option value="raw">Raw image (.ima / .img)</option>
+          <option value="imz">WinImage compressed (.imz)</option>
+          <option value="vhd">Virtual Hard Disk (.vhd)</option>
+          <option value="vhdx">Virtual Hard Disk v2 (.vhdx)</option>
+          <option value="vmdk">VMware disk (.vmdk)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="saveDynamic" checked> Dynamic (VHD, VHDX, VMDK)</label>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">Choose location…</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="isoDlg">
+    <form method="dialog">
+      <h2>Build ISO image</h2>
+      <p class="hint">Makes an ISO 9660 + Joliet CD image from a folder on this computer.</p>
+      <label>Volume label <input id="isoLabel" maxlength="32" spellcheck="false" value="CDROM"></label>
+      <label>Boot image (optional, El Torito)
+        <span class="row"><input id="isoBoot" readonly placeholder="none"><button type="button" id="isoBootPick">Browse…</button><button type="button" id="isoBootClear">Clear</button></span>
+      </label>
+      <label class="check"><input type="checkbox" id="isoEfi"> The boot image is for UEFI</label>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">Choose folder…</button>
+      </menu>
     </form>
   </dialog>
 
