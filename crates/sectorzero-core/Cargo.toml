@@ -1,0 +1,17 @@
+[package]
+name = "sectorzero-core"
+description = "Disk image engine for SectorZero: raw images, MBR partitions, FAT12/16/32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[dependencies]
+fatfs.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

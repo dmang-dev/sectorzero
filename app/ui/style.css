@@ -1,0 +1,187 @@
+:root {
+  --bg: #ffffff;
+  --panel: #f3f4f6;
+  --border: #d9dce1;
+  --text: #1c1f24;
+  --muted: #646b76;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --row-hover: #eef2f8;
+  --row-selected: #dbe6fd;
+  --danger: #b42318;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1d21;
+    --panel: #24272c;
+    --border: #3a3e45;
+    --text: #e6e8eb;
+    --muted: #9aa1ab;
+    --accent: #4f8cff;
+    --accent-text: #0b1020;
+    --row-hover: #2b2f36;
+    --row-selected: #233658;
+    --danger: #ff7a6e;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+/* Elements toggled with the `hidden` attribute must stay hidden even when they set `display`. */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.toolbar .group { display: flex; gap: 4px; }
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.crumbs button { border: none; background: none; padding: 2px 6px; }
+.crumbs button:hover { background: var(--row-hover); }
+.crumbs .sep { color: var(--muted); }
+
+main {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+}
+
+.empty {
+  max-width: 520px;
+  margin: 12vh auto 0;
+  padding: 0 16px;
+  text-align: center;
+  color: var(--muted);
+}
+.empty h1 { color: var(--text); font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+.empty .hint { font-size: 12px; }
+
+table.files {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.files th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 5px 8px;
+}
+.files td {
+  padding: 3px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.files tbody tr:hover { background: var(--row-hover); }
+.files tbody tr.selected { background: var(--row-selected); }
+.c-name { width: auto; }
+.c-size { width: 110px; text-align: right !important; }
+.c-type { width: 120px; }
+.c-date { width: 160px; }
+.c-attr { width: 60px; font-family: Consolas, monospace; }
+td.c-size, td.c-date, td.c-attr { color: var(--muted); font-variant-numeric: tabular-nums; }
+.icon { display: inline-block; width: 18px; }
+.short { color: var(--muted); margin-left: 6px; }
+
+.dropzone {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: 16px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.status {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+}
+.status.busy #statusLeft::after { content: " — working…"; }
+.status.error #statusLeft { color: var(--danger); }
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 16px 18px;
+  min-width: 360px;
+  max-width: min(560px, 92vw);
+}
+dialog::backdrop { background: rgb(0 0 0 / 0.35); }
+dialog h2 { font-size: 15px; margin: 0 0 12px; }
+dialog label { display: block; margin-bottom: 10px; color: var(--muted); }
+dialog select, dialog input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+}
+dialog menu { display: flex; justify-content: flex-end; gap: 6px; margin: 14px 0 0; padding: 0; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; user-select: text; font-variant-numeric: tabular-nums; }

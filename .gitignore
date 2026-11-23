@@ -1,0 +1,7 @@
+/target/
+node_modules/
+/app/src-tauri/gen/
+*.ima
+*.img
+*.vfd
+!/crates/sectorzero-core/tests/fixtures/**
