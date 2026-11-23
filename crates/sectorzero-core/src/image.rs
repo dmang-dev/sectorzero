@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::checksum::{Checksums, Hasher};
 use crate::container::{self, ContainerInfo, ContainerKind, SharedDisk};
 use crate::error::{Error, Result};
-use crate::fatraw::{self, BootSectorEdit, BootSectorInfo, DefragReport};
+use crate::fatraw::{self, BootSectorEdit, BootSectorInfo, DefragReport, EntryEdit};
 use crate::partition::{self, Layout, PartitionInfo};
 use crate::util::*;
 use crate::window::{Window, lock};
@@ -216,6 +217,19 @@ impl Image {
         self.flush()
     }
 
+    // --- file properties ---------------------------------------------------------------
+
+    /// Change attributes and timestamps of a file or folder (with `recursive`, of everything
+    /// below it too). Returns how many entries changed.
+    pub fn edit_entry(&self, path: &str, edit: &EntryEdit, recursive: bool) -> Result<u64> {
+        self.require_writable()?;
+        self.require_fat()?;
+        let path = crate::volume::norm(path)?;
+        let n = fatraw::edit_entries(&mut self.window(), &path, edit, recursive)?;
+        self.flush()?;
+        Ok(n)
+    }
+
     // --- defragmentation --------------------------------------------------------------
 
     pub fn analyze_fragmentation(&self) -> Result<DefragReport> {
@@ -230,6 +244,77 @@ impl Image {
         self.flush()?;
         Ok(r)
     }
+
+    // --- checksums and ISO edits -------------------------------------------------------
+
+    /// Checksums of the virtual disk's contents. They do not depend on the container, so an
+    /// IMA, its IMZ and its VHDX copy all give the same values. A truncated floppy image
+    /// is hashed at its full size.
+    pub fn checksum_disk(&self) -> Result<Checksums> {
+        let mut d = lock(&self.disk)?;
+        let mut size = d.size();
+        if matches!(self.layout, Layout::BareVolume) {
+            size = size.max(self.len);
+        }
+        let mut h = Hasher::new();
+        let mut buf = vec![0u8; 1024 * 1024];
+        let mut at = 0;
+        while at < size {
+            let n = (size - at).min(buf.len() as u64) as usize;
+            d.read_at(at, &mut buf[..n])?;
+            h.update(&buf[..n]);
+            at += n as u64;
+        }
+        Ok(h.finish())
+    }
+
+    /// Replace the contents of a file inside an ISO 9660 image, in place. The new data must
+    /// fit in the sectors the old file occupies (WinImage only allows the same size).
+    pub fn iso_replace_file(&self, path: &str, data: &[u8]) -> Result<()> {
+        self.require_writable()?;
+        if !matches!(self.layout, Layout::Iso) {
+            return Err(Error::Invalid("this is not an ISO 9660 image".into()));
+        }
+        crate::iso::replace_file(self.window(), &crate::volume::norm(path)?, data)?;
+        self.flush()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TruncateReport {
+    pub old_size: u64,
+    pub new_size: u64,
+}
+
+/// Cut the unused space off the end of a raw floppy or volume image (WinImage's
+/// "truncate unused space"). SectorZero and WinImage read such images as zero-padded.
+pub fn truncate_image(path: &Path) -> Result<TruncateReport> {
+    let img = Image::open(path, &OpenOptions::default())?;
+    if img.container().kind != ContainerKind::Raw {
+        return Err(Error::Unsupported(
+            "truncating this container (raw images only; IMZ/VHD/VMDK store free space compactly already)"
+                .into(),
+        ));
+    }
+    if !matches!(img.layout, Layout::BareVolume) {
+        return Err(Error::Unsupported(
+            "truncating partitioned or ISO images (floppy and bare volume images only)".into(),
+        ));
+    }
+    img.require_fat()?;
+    let end = round_up(fatraw::used_end(&mut img.window())?, 512);
+    drop(img);
+    let old_size = std::fs::metadata(path)?.len();
+    if end < old_size {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .set_len(end)?;
+    }
+    Ok(TruncateReport {
+        old_size,
+        new_size: end.min(old_size),
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]

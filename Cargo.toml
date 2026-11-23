@@ -19,8 +19,15 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 thiserror = "2"
 # IMZ / WLZ are ZIP files.
 zip = { version = "9.8", default-features = false, features = ["deflate"] }
-# CRC-32 for GPT headers.
+# Raw deflate for compressed QCOW2 clusters (already in the tree through zip).
+flate2 = "1.1"
+# CRC-32 for GPT headers and checksums.
 crc32fast = "1.5"
+# Image and file checksums (RustCrypto, MIT/Apache-2.0; adler2 is 0BSD/MIT/Apache-2.0).
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"
+adler2 = "2"
 # Random GUIDs for GPT, VHD, VHDX.
 uuid = { version = "1.29", features = ["v4"] }
 anyhow = "1"

@@ -24,6 +24,19 @@ jobs:
             os: windows-latest
             bundles: nsis
             cli: s0.exe
+          # Cross-compiled on the x64 runner (it has the MSVC ARM64 and x86 tools). The NSIS
+          # installer stub itself is x86 and runs everywhere; it installs native binaries.
+          - name: windows-arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            bundles: nsis
+            cli: s0.exe
+          # 32-bit Windows. Rust's Windows targets need Windows 10 or later.
+          - name: windows-x86
+            os: windows-latest
+            target: i686-pc-windows-msvc
+            bundles: nsis
+            cli: s0.exe
           - name: linux-x64
             os: ubuntu-24.04
             bundles: deb,appimage
@@ -41,8 +54,12 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev file
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -51,29 +68,38 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       - name: Build CLI
-        run: cargo build --release --locked -p sectorzero-cli
+        shell: bash
+        run: cargo build --release --locked -p sectorzero-cli ${TARGET:+--target "$TARGET"}
+        env:
+          TARGET: ${{ matrix.target }}
 
       - name: Build desktop app
         working-directory: app
+        shell: bash
         run: |
           npm ci
-          npx tauri build --bundles ${{ matrix.bundles }}
+          npx tauri build --bundles ${{ matrix.bundles }} ${TARGET:+--target "$TARGET"}
+        env:
+          TARGET: ${{ matrix.target }}
 
       - name: Collect files
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
+          out="target/${TARGET:+$TARGET/}release"
           version="${GITHUB_REF_NAME#v}"
           [ "$GITHUB_REF_TYPE" = tag ] || version="dev-${GITHUB_SHA::7}"
           mkdir -p dist
           stage="s0-${version}-${{ matrix.name }}"
           mkdir "$stage"
-          cp "target/release/${{ matrix.cli }}" LICENSE README.md THIRD_PARTY_NOTICES.md "$stage/"
+          cp "$out/${{ matrix.cli }}" LICENSE README.md THIRD_PARTY_NOTICES.md "$stage/"
           if [ "$RUNNER_OS" = Windows ]; then
             7z a "dist/${stage}.zip" "$stage" > /dev/null
-            cp target/release/bundle/nsis/*.exe dist/
+            cp "$out"/bundle/nsis/*.exe dist/
           else
             tar czf "dist/${stage}.tar.gz" "$stage"
-            cp target/release/bundle/deb/*.deb target/release/bundle/appimage/*.AppImage dist/
+            cp "$out"/bundle/deb/*.deb "$out"/bundle/appimage/*.AppImage dist/
           fi
           (cd dist && sha256sum * > "SHA256SUMS-${{ matrix.name }}.txt")
           ls -l dist

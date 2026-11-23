@@ -29,7 +29,7 @@ and the files affected. Also keep the original copyright notice in those files.
 |---|---|---|
 | [fatfs](https://github.com/rafalh/rust-fatfs) 0.3 (vendored, see above) | FAT12/16/32 engine | MIT |
 | [zip](https://github.com/zip-rs/zip2) | IMZ and WLZ containers | MIT |
-| [crc32fast](https://github.com/srijs/rust-crc32fast) | GPT checksums | MIT OR Apache-2.0 |
+| [crc32fast](https://github.com/srijs/rust-crc32fast) | GPT checksums, CRC-32 | MIT OR Apache-2.0 |
 | [uuid](https://github.com/uuid-rs/uuid) | GPT, VHD and VHDX identifiers | MIT OR Apache-2.0 |
 | [tempfile](https://github.com/Stebalien/tempfile) | Scratch images for change format | MIT OR Apache-2.0 |
 | [chrono](https://github.com/chronotope/chrono) | Timestamp conversion | MIT OR Apache-2.0 |
@@ -38,6 +38,11 @@ and the files affected. Also keep the original copyright notice in those files.
 | [clap](https://github.com/clap-rs/clap) | CLI argument parsing | MIT OR Apache-2.0 |
 | [anyhow](https://github.com/dtolnay/anyhow) | CLI error reporting | MIT OR Apache-2.0 |
 | [tauri](https://github.com/tauri-apps/tauri) 2, tauri-plugin-dialog | Desktop app shell, native dialogs | MIT OR Apache-2.0 |
+| [tauri-plugin-opener](https://github.com/tauri-apps/plugins-workspace) | Opening a copied-out file with its default program | MIT OR Apache-2.0 |
+| [drag](https://github.com/crabnebula-dev/drag-rs) | Native drag of files out of the app window | MIT OR Apache-2.0 |
+| [md-5, sha1, sha2](https://github.com/RustCrypto/hashes) | Image and file checksums | MIT OR Apache-2.0 |
+| [adler2](https://github.com/oyvindln/adler2) | Adler-32 checksums | 0BSD OR MIT OR Apache-2.0 |
+| [flate2](https://github.com/rust-lang/flate2-rs) | Compressed QCOW2 clusters | MIT OR Apache-2.0 |
 
 ## Transitive dependencies
 

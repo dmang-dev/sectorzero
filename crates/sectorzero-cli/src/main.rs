@@ -1,13 +1,16 @@
 //! `s0`: the SectorZero command line.
 
+mod sfx;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use sectorzero_core::{
-    BootPlatform, BootSectorEdit, ContainerKind, CreateOptions, Entry, FLOPPY_FORMATS,
-    FloppyFormat, Image, IsoBuildOptions, Layout, NewImage, OpenOptions, PartitionScheme, Stats,
-    Volume, VolumeInfo, build_iso, convert, probe,
+    BootPlatform, BootSectorEdit, Checksums, ContainerKind, CreateOptions, Entry, EntryEdit,
+    FLOPPY_FORMATS, FloppyFormat, Geometry, Image, IsoBuildOptions, Layout, ListingFormat,
+    NewImage, OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo, build_iso, checksum_file,
+    convert, create_differencing, probe, render_listing, truncate_image,
 };
 
 #[derive(Parser)]
@@ -26,7 +29,7 @@ struct Cli {
 
 #[derive(clap::Args)]
 struct Img {
-    /// Image file: .ima .img .vfd .imz .wlz .vhd .vhdx .vmdk .iso …
+    /// Image file: .ima .img .imz .vhd .vhdx .vmdk .vdi .qcow2 .iso .cue .nrg …, or a block device
     image: PathBuf,
     /// Partition number (MBR 1-4 primary, 5+ logical; GPT entry). Default: the first FAT partition.
     #[arg(short, long)]
@@ -60,6 +63,11 @@ enum Container {
     Vhd,
     Vhdx,
     Vmdk,
+    Vdi,
+    Qcow2,
+    Nhd,
+    Hdi,
+    Fdi,
 }
 
 impl From<Container> for ContainerKind {
@@ -70,6 +78,11 @@ impl From<Container> for ContainerKind {
             Container::Vhd => ContainerKind::Vhd,
             Container::Vhdx => ContainerKind::Vhdx,
             Container::Vmdk => ContainerKind::Vmdk,
+            Container::Vdi => ContainerKind::Vdi,
+            Container::Qcow2 => ContainerKind::Qcow2,
+            Container::Nhd => ContainerKind::Nhd,
+            Container::Hdi => ContainerKind::Hdi,
+            Container::Fdi => ContainerKind::Fdi,
         }
     }
 }
@@ -77,15 +90,89 @@ impl From<Container> for ContainerKind {
 #[derive(clap::Args)]
 struct FormatSpec {
     /// Floppy format id (see `s0 formats`), e.g. 1440, 720, dmf2048.
-    #[arg(short, long, conflicts_with = "size", required_unless_present = "size")]
+    #[arg(
+        short,
+        long,
+        conflicts_with_all = ["size", "like"],
+        required_unless_present_any = ["size", "like", "sectors"]
+    )]
     format: Option<String>,
     /// Size of a hard disk / volume image instead of a floppy, e.g. 32M, 512M, 2G.
     #[arg(short, long)]
     size: Option<String>,
+    /// Copy the geometry of another image, or of a 512-byte boot sector file (.bin).
+    #[arg(long)]
+    like: Option<PathBuf>,
+    #[command(flatten)]
+    geo: GeometryArgs,
+}
+
+/// Any of these turns the format into a custom one (WinImage's custom format).
+#[derive(clap::Args)]
+#[command(next_help_heading = "Custom geometry")]
+struct GeometryArgs {
+    /// Total 512-byte sectors.
+    #[arg(long)]
+    sectors: Option<u32>,
+    #[arg(long)]
+    sectors_per_track: Option<u16>,
+    #[arg(long)]
+    heads: Option<u16>,
+    /// Cluster size, e.g. 512, 2K, 32K.
+    #[arg(long)]
+    cluster: Option<String>,
+    /// Root folder entries (FAT12/16).
+    #[arg(long)]
+    root_entries: Option<u16>,
+    /// Number of FAT copies (1 or 2).
+    #[arg(long)]
+    fats: Option<u8>,
+    /// Media descriptor byte, e.g. 0xF0 (floppy) or 0xF8 (hard disk).
+    #[arg(long, value_parser = parse_byte)]
+    media: Option<u8>,
+    /// FAT type: 12, 16 or 32.
+    #[arg(long)]
+    fat: Option<u8>,
+    #[arg(long)]
+    hidden_sectors: Option<u32>,
+    /// BIOS drive number, e.g. 0x00 (floppy) or 0x80 (hard disk).
+    #[arg(long, value_parser = parse_byte)]
+    drive: Option<u8>,
+}
+
+impl GeometryArgs {
+    fn any(&self) -> bool {
+        self.sectors.is_some()
+            || self.sectors_per_track.is_some()
+            || self.heads.is_some()
+            || self.cluster.is_some()
+            || self.root_entries.is_some()
+            || self.fats.is_some()
+            || self.media.is_some()
+            || self.fat.is_some()
+            || self.hidden_sectors.is_some()
+            || self.drive.is_some()
+    }
+}
+
+/// The boot sector of an image, or the contents of a 512-byte `.bin` file.
+fn read_boot_sector(p: &Path) -> Result<Vec<u8>> {
+    let len = std::fs::metadata(p)
+        .with_context(|| format!("cannot read {}", p.display()))?
+        .len();
+    if len == 512 {
+        return Ok(std::fs::read(p)?);
+    }
+    Ok(Image::open(p, &OpenOptions::default())
+        .with_context(|| format!("cannot open {}", p.display()))?
+        .boot_sector()?)
 }
 
 impl FormatSpec {
     fn spec(&self) -> Result<NewImage> {
+        if self.like.is_some() || self.geo.any() {
+            return self.custom();
+        }
         Ok(match (&self.format, &self.size) {
             (Some(f), _) => NewImage::Floppy(
                 FloppyFormat::find(f)
@@ -97,6 +184,87 @@ impl FormatSpec {
             (None, None) => unreachable!("clap requires one of --format/--size"),
         })
     }
+
+    fn custom(&self) -> Result<NewImage> {
+        let mut g = if let Some(p) = &self.like {
+            Geometry::from_boot_sector(&read_boot_sector(p)?)
+                .with_context(|| format!("{} has no usable FAT boot sector", p.display()))?
+        } else if let Some(f) = &self.format {
+            Geometry::from_floppy(
+                FloppyFormat::find(f)
+                    .with_context(|| format!("unknown format {f:?}; see `s0 formats`"))?,
+            )
+        } else {
+            Geometry {
+                total_sectors: 0,
+                sectors_per_track: 32,
+                heads: 64,
+                bytes_per_cluster: 0,
+                root_entries: 0,
+                fats: 2,
+                media: 0xF8,
+                fat_bits: 0,
+                hidden_sectors: 0,
+                drive_number: 0x80,
+            }
+        };
+        if let Some(s) = &self.size {
+            g.total_sectors =
+                u32::try_from(parse_size(s)? / 512).context("the size is too large for FAT")?;
+        }
+        let a = &self.geo;
+        if let Some(v) = a.sectors {
+            g.total_sectors = v;
+        }
+        if let Some(v) = a.sectors_per_track {
+            g.sectors_per_track = v;
+        }
+        if let Some(v) = a.heads {
+            g.heads = v;
+        }
+        if let Some(v) = &a.cluster {
+            g.bytes_per_cluster = u32::try_from(parse_size(v)?).context("cluster size")?;
+        }
+        if let Some(v) = a.root_entries {
+            g.root_entries = v;
+        }
+        if let Some(v) = a.fats {
+            g.fats = v;
+        }
+        if let Some(v) = a.media {
+            g.media = v;
+        }
+        if let Some(v) = a.fat {
+            g.fat_bits = v;
+        }
+        if let Some(v) = a.hidden_sectors {
+            g.hidden_sectors = v;
+        }
+        if let Some(v) = a.drive {
+            g.drive_number = v;
+        }
+        if g.total_sectors == 0 {
+            bail!("a custom format needs --sectors or --size");
+        }
+        Ok(NewImage::Custom(g))
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ListFmt {
+    Txt,
+    Csv,
+    Html,
+}
+
+impl From<ListFmt> for ListingFormat {
+    fn from(f: ListFmt) -> Self {
+        match f {
+            ListFmt::Txt => ListingFormat::Text,
+            ListFmt::Csv => ListingFormat::Csv,
+            ListFmt::Html => ListingFormat::Html,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -104,7 +272,8 @@ enum Cmd {
     /// List the built-in floppy formats.
     Formats,
     /// Create a new empty formatted image. The container follows the extension
-    /// (.imz .vhd .vhdx .vmdk; raw otherwise) unless --container is given.
+    /// (.imz .vhd .vhdx .vmdk .vdi .qcow2 .nhd .hdi .fdi; raw otherwise) unless --container
+    /// is given.
     New {
         image: PathBuf,
         #[command(flatten)]
@@ -116,7 +285,7 @@ enum Cmd {
         table: Table,
         #[arg(short, long, value_enum)]
         container: Option<Container>,
-        /// Fixed-size VHD/VHDX/VMDK (default: dynamic, growing as data is written).
+        /// Fixed-size VHD/VHDX/VMDK/VDI (default: dynamic, growing as data is written).
         #[arg(long)]
         fixed: bool,
         /// Replace the file if it exists.
@@ -134,6 +303,15 @@ enum Cmd {
         dir: String,
         #[arg(short, long)]
         recursive: bool,
+        /// Write a listing (always recursive) as text, CSV or HTML instead.
+        #[arg(long, value_enum)]
+        format: Option<ListFmt>,
+        /// File for --format (default: print it).
+        #[arg(short, long, requires = "format")]
+        out: Option<PathBuf>,
+        /// Overwrite the --out file.
+        #[arg(long)]
+        force: bool,
     },
     /// Copy files or folders out of the image (everything if no paths are given).
     Extract {
@@ -251,7 +429,7 @@ enum Cmd {
         /// Container of the destination (default: from its extension).
         #[arg(short, long, value_enum)]
         container: Option<Container>,
-        /// Fixed-size VHD/VHDX/VMDK (default: dynamic).
+        /// Fixed-size VHD/VHDX/VMDK/VDI (default: dynamic).
         #[arg(long)]
         fixed: bool,
         /// Image inside a WLZ list.
@@ -281,6 +459,75 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Show or change attributes and dates of files or folders inside the image.
+    Attrib {
+        #[command(flatten)]
+        img: Img,
+        #[arg(required = true)]
+        paths: Vec<String>,
+        /// Attributes to set: any of R (read-only), H (hidden), S (system), A (archive).
+        #[arg(long, value_name = "RHSA")]
+        set: Option<String>,
+        /// Attributes to clear.
+        #[arg(long, value_name = "RHSA")]
+        clear: Option<String>,
+        /// Last-modified time, local: YYYY-MM-DD[ HH:MM[:SS]].
+        #[arg(long)]
+        modified: Option<String>,
+        /// Creation time, local: YYYY-MM-DD[ HH:MM[:SS]].
+        #[arg(long)]
+        created: Option<String>,
+        /// Last-access date: YYYY-MM-DD.
+        #[arg(long)]
+        accessed: Option<String>,
+        /// Apply to everything inside the given folders too.
+        #[arg(short, long)]
+        recursive: bool,
+    },
+    /// CRC32, Adler-32, MD5, SHA-1 and SHA-256 of the virtual disk, the image file, or a file
+    /// inside the image.
+    Checksum {
+        #[command(flatten)]
+        img: Img,
+        /// A file inside the image. Without it, the whole virtual disk is hashed (the same
+        /// for every container holding the same disk).
+        path: Option<String>,
+        /// Hash the image file byte for byte as stored instead (e.g. the compressed .imz).
+        #[arg(long, conflicts_with = "path")]
+        file: bool,
+    },
+    /// Cut unused space off the end of a raw floppy or volume image.
+    Truncate { image: PathBuf },
+    /// Create a differencing VHD (or Virtual PC undo disk, .vud) over PARENT: reads of
+    /// unchanged sectors come from the parent, writes go only to the new file.
+    Diff {
+        parent: PathBuf,
+        child: PathBuf,
+        /// Replace CHILD if it exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Replace a file inside an ISO image in place. The new file must fit in the sectors
+    /// the old one occupies.
+    IsoReplace {
+        #[command(flatten)]
+        img: Img,
+        /// File inside the ISO.
+        path: String,
+        /// New contents (a file on this computer).
+        file: PathBuf,
+    },
+    /// Package an image into a self-extracting executable (for the platform this s0 runs on).
+    Sfx {
+        image: PathBuf,
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Text shown when the executable runs.
+        #[arg(long)]
+        comment: Option<String>,
+        #[arg(long)]
+        force: bool,
+    },
     /// Save the El Torito boot image of an ISO to a file.
     BootImage {
         #[command(flatten)]
@@ -296,6 +543,9 @@ enum Cmd {
 }
 
 fn main() {
+    if let Some(payload) = sfx::detect() {
+        std::process::exit(sfx::run(payload));
+    }
     if let Err(e) = run(Cli::parse()) {
         eprintln!("s0: {e:#}");
         std::process::exit(1);
@@ -412,8 +662,32 @@ fn run(cli: Cli) -> Result<()> {
             img,
             dir,
             recursive,
+            format,
+            out,
+            force,
         } => {
             let vol = open(&img, false)?;
+            if let Some(f) = format {
+                let title = img
+                    .image
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let text = render_listing(&title, &vol.walk(&dir)?, f.into());
+                return match out {
+                    Some(o) => {
+                        write_new(&o, text.as_bytes(), force)?;
+                        if !json {
+                            println!("wrote {}", o.display());
+                        }
+                        Ok(())
+                    }
+                    None => {
+                        print!("{text}");
+                        Ok(())
+                    }
+                };
+            }
             let entries = if recursive {
                 vol.walk(&dir)?
             } else {
@@ -729,6 +1003,159 @@ fn run(cli: Cli) -> Result<()> {
                 if r.bootable { ", bootable" } else { "" }
             );
         }
+        Cmd::Attrib {
+            img,
+            paths,
+            set,
+            clear,
+            modified,
+            created,
+            accessed,
+            recursive,
+        } => {
+            let mut edit = EntryEdit {
+                modified,
+                created,
+                accessed,
+                ..Default::default()
+            };
+            for (letters, on) in [(&set, true), (&clear, false)] {
+                for c in letters.as_deref().unwrap_or("").chars() {
+                    let slot = match c.to_ascii_uppercase() {
+                        'R' => &mut edit.read_only,
+                        'H' => &mut edit.hidden,
+                        'S' => &mut edit.system,
+                        'A' => &mut edit.archive,
+                        other => bail!("unknown attribute {other:?} (use R, H, S or A)"),
+                    };
+                    if slot.is_some_and(|v| v != on) {
+                        bail!("attribute {c} is both set and cleared");
+                    }
+                    *slot = Some(on);
+                }
+            }
+            if edit.is_empty() {
+                let vol = open(&img, false)?;
+                let mut shown = Vec::new();
+                for p in &paths {
+                    let e = vol
+                        .stat(p)?
+                        .with_context(|| format!("{p}: not found (or the root folder)"))?;
+                    shown.push(e);
+                }
+                if json {
+                    return print_json(&shown);
+                }
+                for e in shown {
+                    println!(
+                        "{}  modified {}  created {}  accessed {}  /{}",
+                        e.attributes.flags(),
+                        e.modified,
+                        if e.created.is_empty() {
+                            "-"
+                        } else {
+                            &e.created
+                        },
+                        if e.accessed.is_empty() {
+                            "-"
+                        } else {
+                            &e.accessed
+                        },
+                        e.path
+                    );
+                }
+                return Ok(());
+            }
+            let image = open_image(&img, true)?;
+            let mut changed = 0;
+            for p in &paths {
+                changed += image
+                    .edit_entry(p, &edit, recursive)
+                    .with_context(|| format!("cannot change {p}"))?;
+            }
+            if json {
+                return print_json(&serde_json::json!({ "changed": changed }));
+            }
+            println!(
+                "changed {changed} entr{}",
+                if changed == 1 { "y" } else { "ies" }
+            );
+        }
+        Cmd::Checksum { img, path, file } => {
+            let sums = if file {
+                checksum_file(&img.image)?
+            } else if let Some(p) = &path {
+                open(&img, false)?.checksum(p)?
+            } else {
+                open_image(&img, false)?.checksum_disk()?
+            };
+            if json {
+                return print_json(&sums);
+            }
+            let what = match (&path, file) {
+                (Some(p), _) => format!("file /{}", p.trim_start_matches(['/', '\\'])),
+                (None, true) => "image file as stored".into(),
+                (None, false) => "virtual disk".into(),
+            };
+            print_checksums(&what, &sums);
+        }
+        Cmd::Diff {
+            parent,
+            child,
+            force,
+        } => {
+            let info = create_differencing(&child, &parent, force)
+                .with_context(|| format!("cannot create {}", child.display()))?;
+            if json {
+                return print_json(&info);
+            }
+            println!(
+                "created {} ({} bytes) over {}",
+                child.display(),
+                info.virtual_size,
+                parent.display()
+            );
+        }
+        Cmd::Truncate { image } => {
+            let r = truncate_image(&image)
+                .with_context(|| format!("cannot truncate {}", image.display()))?;
+            if json {
+                return print_json(&r);
+            }
+            if r.new_size < r.old_size {
+                println!(
+                    "truncated {} from {} to {} bytes",
+                    image.display(),
+                    r.old_size,
+                    r.new_size
+                );
+            } else {
+                println!("{} has no unused space at the end", image.display());
+            }
+        }
+        Cmd::IsoReplace { img, path, file } => {
+            let data =
+                std::fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
+            open_image(&img, true)?
+                .iso_replace_file(&path, &data)
+                .with_context(|| format!("cannot replace {path}"))?;
+            if json {
+                return print_json(&serde_json::json!({ "path": path, "bytes": data.len() }));
+            }
+            println!("replaced {path} ({} bytes)", data.len());
+        }
+        Cmd::Sfx {
+            image,
+            out,
+            comment,
+            force,
+        } => {
+            let size = sfx::create(&image, &out, comment, force)?;
+            if json {
+                return print_json(&serde_json::json!({ "file": out, "bytes": size }));
+            }
+            println!("wrote {} ({size} bytes)", out.display());
+        }
         Cmd::BootImage {
             img,
             entry,
@@ -884,6 +1311,15 @@ fn print_listing(entries: &[Entry], recursive: bool) {
         }
     }
     println!("{files} file(s), {bytes} bytes; {dirs} folder(s)");
+}
+
+fn print_checksums(what: &str, c: &Checksums) {
+    println!("{what}, {} bytes", c.bytes);
+    println!("  CRC32    {}", c.crc32);
+    println!("  Adler-32 {}", c.adler32);
+    println!("  MD5      {}", c.md5);
+    println!("  SHA-1    {}", c.sha1);
+    println!("  SHA-256  {}", c.sha256);
 }
 
 fn add(total: &mut Stats, s: Stats) {

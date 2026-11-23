@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use super::{ContainerInfo, ContainerKind, Disk, read_up_to};
+use super::{ContainerInfo, ContainerKind, Disk, file_len, read_up_to};
 
 pub(crate) struct RawDisk {
     file: File,
@@ -13,8 +13,8 @@ pub(crate) struct RawDisk {
 
 impl RawDisk {
     pub(crate) fn open(path: &Path, writable: bool) -> io::Result<Self> {
-        let file = File::options().read(true).write(writable).open(path)?;
-        let len = file.metadata()?.len();
+        let mut file = File::options().read(true).write(writable).open(path)?;
+        let len = file_len(&mut file)?;
         Ok(RawDisk { file, len })
     }
 

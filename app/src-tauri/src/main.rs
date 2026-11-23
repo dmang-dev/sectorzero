@@ -9,10 +9,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use sectorzero_core::{
-    BootPlatform, BootSectorEdit, BootSectorInfo, ContainerKind, ConvertReport, CreateOptions,
-    DefragReport, Entry, Error, FLOPPY_FORMATS, FloppyFormat, Image, IsoBuildOptions,
-    IsoBuildReport, NewImage, OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo, build_iso,
-    convert,
+    BootPlatform, BootSectorEdit, BootSectorInfo, Checksums, ContainerKind, ConvertReport,
+    CreateOptions, DefragReport, Entry, EntryEdit, Error, FLOPPY_FORMATS, FloppyFormat, Geometry,
+    Image, IsoBuildOptions, IsoBuildReport, ListingFormat, NewImage, OpenOptions, PartitionScheme,
+    Stats, TruncateReport, Volume, VolumeInfo, build_iso, checksum_file, convert,
+    create_differencing, render_listing, truncate_image,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -157,7 +158,14 @@ fn open_image(
     Ok(out)
 }
 
-fn spec_of(format: Option<&str>, size_mb: Option<f64>) -> CmdResult<NewImage> {
+fn spec_of(
+    format: Option<&str>,
+    size_mb: Option<f64>,
+    geometry: Option<Geometry>,
+) -> CmdResult<NewImage> {
+    if let Some(g) = geometry {
+        return Ok(NewImage::Custom(g));
+    }
     match (format, size_mb) {
         (Some(f), _) => Ok(NewImage::Floppy(
             FloppyFormat::find(f).ok_or_else(|| invalid(format!("Unknown format {f}")))?,
@@ -177,6 +185,11 @@ fn container_of(name: Option<&str>) -> CmdResult<Option<ContainerKind>> {
         Some("vhd") => Some(ContainerKind::Vhd),
         Some("vhdx") => Some(ContainerKind::Vhdx),
         Some("vmdk") => Some(ContainerKind::Vmdk),
+        Some("vdi") => Some(ContainerKind::Vdi),
+        Some("qcow2") => Some(ContainerKind::Qcow2),
+        Some("nhd") => Some(ContainerKind::Nhd),
+        Some("hdi") => Some(ContainerKind::Hdi),
+        Some("fdi") => Some(ContainerKind::Fdi),
         Some(other) => return Err(invalid(format!("Unknown container {other}"))),
     })
 }
@@ -192,6 +205,9 @@ struct NewSpec {
     scheme: Option<String>,
     container: Option<String>,
     dynamic: bool,
+    /// Custom layout; overrides `format` and `size_mb`.
+    #[serde(default)]
+    geometry: Option<Geometry>,
 }
 
 /// The save dialog already confirmed replacing an existing file, so this overwrites.
@@ -209,7 +225,11 @@ fn new_image(spec: NewSpec, state: State<AppState>) -> CmdResult<Opened> {
         dynamic: spec.dynamic,
         overwrite: true,
     };
-    Volume::create(&path, spec_of(spec.format.as_deref(), spec.size_mb)?, &opts)?;
+    Volume::create(
+        &path,
+        spec_of(spec.format.as_deref(), spec.size_mb, spec.geometry)?,
+        &opts,
+    )?;
     let vol = Volume::open(&path, &OpenOptions::default())?;
     let out = opened(&path, &vol)?;
     remember(&state, path, None, None);
@@ -341,10 +361,11 @@ fn defrag(analyze: bool, zero_free: bool, state: State<AppState>) -> CmdResult<D
 fn change_format(
     format: Option<String>,
     size_mb: Option<f64>,
+    geometry: Option<Geometry>,
     state: State<AppState>,
 ) -> CmdResult<Opened> {
     let (path, opts) = current_opts(&state, true)?;
-    Volume::change_format(&path, &opts, spec_of(format.as_deref(), size_mb)?)?;
+    Volume::change_format(&path, &opts, spec_of(format.as_deref(), size_mb, geometry)?)?;
     reopened(&state)
 }
 
@@ -396,6 +417,186 @@ fn export_boot_image(entry: usize, dest: String, state: State<AppState>) -> CmdR
     Ok(data.len() as u64)
 }
 
+/// New differencing (undo) VHD over the open VHD; the save dialog confirmed replacing.
+#[tauri::command(async)]
+fn make_differencing(dest: String, state: State<AppState>) -> CmdResult<Opened> {
+    let (parent, _) = current_opts(&state, false)?;
+    let child = PathBuf::from(dest);
+    create_differencing(&child, &parent, true)?;
+    let vol = Volume::open(&child, &OpenOptions::default())?;
+    let out = opened(&child, &vol)?;
+    remember(&state, child, None, None);
+    Ok(out)
+}
+
+/// The layout of an existing image or a saved 512-byte boot sector, for "same as" in the
+/// New and Change format dialogs. `None` reads the open image.
+#[tauri::command(async)]
+fn geometry_of(path: Option<String>, state: State<AppState>) -> CmdResult<Geometry> {
+    let boot = match path {
+        Some(p) if std::fs::metadata(&p)?.len() == 512 => std::fs::read(&p)?,
+        Some(p) => Image::open(Path::new(&p), &OpenOptions::default())?.boot_sector()?,
+        None => image_current(&state, false)?.boot_sector()?,
+    };
+    Ok(Geometry::from_boot_sector(&boot)?)
+}
+
+/// Attributes and dates of one or more entries. Returns how many entries changed.
+#[tauri::command(async)]
+fn edit_entries(
+    paths: Vec<String>,
+    edit: EntryEdit,
+    recursive: bool,
+    state: State<AppState>,
+) -> CmdResult<u64> {
+    let img = image_current(&state, true)?;
+    let mut n = 0;
+    for p in &paths {
+        n += img.edit_entry(p, &edit, recursive)?;
+    }
+    Ok(n)
+}
+
+/// `what`: "disk" (the disk inside the container), "image" (the image file as stored) or
+/// "file" (one file inside the image, `path`).
+#[tauri::command(async)]
+fn checksum(what: String, path: Option<String>, state: State<AppState>) -> CmdResult<Checksums> {
+    match what.as_str() {
+        "disk" => Ok(image_current(&state, false)?.checksum_disk()?),
+        "image" => {
+            let (p, _) = current_opts(&state, false)?;
+            Ok(checksum_file(&p)?)
+        }
+        "file" => {
+            let path = path.ok_or_else(|| invalid("Choose a file first.".into()))?;
+            Ok(open_current(&state, false)?.checksum(&path)?)
+        }
+        other => Err(invalid(format!("Unknown checksum target {other}"))),
+    }
+}
+
+/// Write a listing of `dir` and everything under it. The save dialog confirmed replacing.
+#[tauri::command(async)]
+fn export_listing(
+    dest: String,
+    format: ListingFormat,
+    dir: String,
+    state: State<AppState>,
+) -> CmdResult<usize> {
+    let (path, _) = current_opts(&state, false)?;
+    let entries = open_current(&state, false)?.walk(&dir)?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let title = if dir.is_empty() {
+        name
+    } else {
+        format!("{name} — /{dir}")
+    };
+    std::fs::write(dest, render_listing(&title, &entries, format))?;
+    Ok(entries.len())
+}
+
+#[tauri::command(async)]
+fn truncate(state: State<AppState>) -> CmdResult<TruncateReport> {
+    let (path, opts) = current_opts(&state, false)?;
+    if opts.partition.is_some() || opts.member.is_some() {
+        return Err(invalid(
+            "Only raw images holding a single volume can be truncated.".into(),
+        ));
+    }
+    Ok(truncate_image(&path)?)
+}
+
+#[tauri::command(async)]
+fn iso_replace(path: String, src: String, state: State<AppState>) -> CmdResult<()> {
+    let data = std::fs::read(src)?;
+    Ok(image_current(&state, true)?.iso_replace_file(&path, &data)?)
+}
+
+/// Files copied out of images (for opening or dragging) go under here. The folder is
+/// cleared when the app starts and when it exits.
+fn temp_root() -> PathBuf {
+    std::env::temp_dir().join("SectorZero")
+}
+
+fn clean_temp() {
+    let _ = std::fs::remove_dir_all(temp_root());
+}
+
+/// Copy `paths` out of the image into a new folder under [`temp_root`]; returns where each
+/// one landed.
+fn extract_to_temp(
+    kind: &str,
+    paths: &[String],
+    state: &State<AppState>,
+) -> CmdResult<Vec<PathBuf>> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let vol = open_current(state, false)?;
+    let dir = temp_root().join(format!(
+        "{kind}-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir)?;
+    let mut out = Vec::new();
+    for p in paths {
+        vol.extract(p, &dir, true)?;
+        let name = p.trim_end_matches('/').rsplit('/').next().unwrap_or(p);
+        out.push(dir.join(name));
+    }
+    Ok(out)
+}
+
+/// Double-click: copy the file out and open it with its default program.
+#[tauri::command(async)]
+fn open_entry(path: String, state: State<AppState>) -> CmdResult<()> {
+    let file = extract_to_temp("open", std::slice::from_ref(&path), &state)?.remove(0);
+    tauri_plugin_opener::open_path(&file, None::<&str>).map_err(|e| invalid(e.to_string()))
+}
+
+/// Drag entries out of the window: copy them out, then start a native file drag.
+/// Resolves with true when they were dropped somewhere, false when the drag was cancelled.
+#[tauri::command(async)]
+fn drag_out(
+    paths: Vec<String>,
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> CmdResult<bool> {
+    let files = extract_to_temp("drag", &paths, &state)?;
+    let (tx, rx) = std::sync::mpsc::channel::<Result<bool, String>>();
+    app.run_on_main_thread(move || {
+        #[cfg(target_os = "linux")]
+        let handle = window.gtk_window();
+        #[cfg(not(target_os = "linux"))]
+        let handle = tauri::Result::Ok(window.clone());
+        let done = tx.clone();
+        let started = match handle {
+            Ok(w) => drag::start_drag(
+                &w,
+                drag::DragItem::Files(files),
+                drag::Image::Raw(include_bytes!("../icons/32x32.png").to_vec()),
+                move |result, _| {
+                    let _ = done.send(Ok(matches!(result, drag::DragResult::Dropped)));
+                },
+                drag::Options::default(),
+            )
+            .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = started {
+            let _ = tx.send(Err(e));
+        }
+    })
+    .map_err(|e| invalid(e.to_string()))?;
+    rx.recv()
+        .map_err(|e| invalid(e.to_string()))?
+        .map_err(invalid)
+}
+
 fn add(total: &mut Stats, s: Stats) {
     total.files += s.files;
     total.dirs += s.dirs;
@@ -403,7 +604,8 @@ fn add(total: &mut Stats, s: Stats) {
 }
 
 fn main() {
-    tauri::Builder::default()
+    clean_temp();
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
@@ -428,7 +630,21 @@ fn main() {
             save_as,
             make_iso,
             export_boot_image,
+            geometry_of,
+            edit_entries,
+            checksum,
+            export_listing,
+            truncate,
+            iso_replace,
+            open_entry,
+            drag_out,
+            make_differencing,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running SectorZero");
+        .build(tauri::generate_context!())
+        .expect("error while starting SectorZero");
+    app.run(|_, event| {
+        if let tauri::RunEvent::Exit = event {
+            clean_temp();
+        }
+    });
 }

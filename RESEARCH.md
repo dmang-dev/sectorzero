@@ -206,7 +206,18 @@ volume label, boot sector edit/import/export, MBR import/export, defragment, cha
 and conversion between containers. Images were cross-checked against the WinImage SDK and Windows'
 ISO mounting.
 
-Still to do, roughly in order: physical drives (read an image from a USB stick or card, write one
-back, with verification), physical floppy drives, batch mode, exFAT, VDI and QCOW2, resizing
-partitioned disks, self-extracting images, encrypted IMZ (proprietary), and the macOS, Linux and
-Android builds.
+Added the same day: custom geometry (and copying a layout from another image or boot sector), file
+attributes and dates, checksums (CRC-32, Adler-32, MD5, SHA-1, SHA-256), file lists as text, CSV
+or HTML, truncating unused space, in-place file replacement in ISOs, self-extracting images (the
+`s0` executable with the image appended), and in the desktop app, opening a file with its default
+program and dragging files out. New containers: VHD differencing and Virtual PC undo disks, VDI,
+QCOW2, split raw, PC-98 NHD/HDI/FDI, and read-only BIN/CUE, NRG and MDS/MDF CD images. VDI and
+QCOW2 were cross-checked with `qemu-img check` and `qemu-img convert`; NRG and MDS were built from
+published format descriptions and have not been tried on files made by Nero or Alcohol yet.
+On Linux, block devices open as raw images; this was tested in an Alpine guest under QEMU with a
+virtual floppy (`/dev/fd0`) and USB stick (`/dev/sda`).
+
+Still to do, roughly in order: physical drives on Windows (read an image from a USB stick or card,
+write one back, with verification), physical floppy drives on Windows, batch mode, NTFS and
+ext2/3/4, exFAT, resizing partitioned disks, converting a boot floppy into a bootable hard disk
+image, encrypted IMZ (proprietary), and the macOS and Android builds.

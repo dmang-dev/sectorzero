@@ -22,6 +22,7 @@
       <button id="btnMkdir" data-needs-writable title="New folder">New folder</button>
       <button id="btnRename" data-needs-selection data-needs-writable title="Rename (F2)">Rename</button>
       <button id="btnDelete" data-needs-selection data-needs-writable title="Delete (Del)">Delete</button>
+      <button id="btnProps" data-needs-selection data-needs-writable title="Attributes and dates (Alt+Enter)">Properties</button>
     </div>
     <div class="group">
       <button id="btnLabel" data-needs-writable title="Change the volume label">Label</button>
@@ -31,9 +32,17 @@
       <button id="btnBootImage" data-needs-image hidden title="Save the El Torito boot image of this ISO">Boot image</button>
     </div>
     <div class="group">
-      <button id="btnSaveAs" data-needs-image title="Save a copy as IMA, IMZ, VHD, VHDX or VMDK">Save as…</button>
+      <button id="btnSaveAs" data-needs-image title="Save a copy as IMA, IMZ, VHD, VHDX, VMDK, VDI, QCOW2 or a PC-98 format">Save as…</button>
       <button id="btnIso" title="Build an ISO image from a folder">Build ISO</button>
       <button id="btnInfo" data-needs-image title="Image information">Info</button>
+      <button id="btnTools" data-needs-image title="Checksums, listing export and more" aria-haspopup="menu" popovertarget="toolsMenu">Tools ▾</button>
+    </div>
+    <div id="toolsMenu" class="popmenu" popover role="menu">
+      <button id="mnuChecksum" role="menuitem">Checksums…</button>
+      <button id="mnuListing" role="menuitem">Export file list…</button>
+      <button id="mnuTruncate" role="menuitem" title="Cut the free space off the end of a raw image file">Truncate unused space…</button>
+      <button id="mnuDiff" role="menuitem" title="Make a new VHD that records changes on top of this one, leaving this file untouched">Create differencing disk…</button>
+      <button id="mnuIsoReplace" role="menuitem" title="Overwrite the selected file on this CD image with another file of the same or smaller size">Replace file in ISO…</button>
     </div>
     <label class="part" id="partWrap" hidden>Partition
       <select id="partSel" aria-label="Partition"></select>
@@ -46,8 +55,9 @@
     <section class="empty" id="empty">
       <h1>SectorZero</h1>
       <p>Drop a disk image here, or use <strong>Open</strong> or <strong>New</strong>.</p>
-      <p class="hint">Opens raw images (.ima .img .vfd .flp .dsk), WinImage IMZ/WLZ, VHD, VHDX and VMDK (bare FAT volumes,
-        MBR or GPT disks) and ISO 9660/Joliet CD images.</p>
+      <p class="hint">Opens raw and split raw images (.ima .img .vfd .flp .dsk .001), WinImage IMZ/WLZ, VHD (including
+        differencing and undo disks), VHDX, VMDK, VDI, QCOW2 and PC-98 NHD/HDI/FDI (bare FAT volumes, MBR or GPT
+        disks), plus ISO, BIN/CUE, NRG and MDS/MDF CD images.</p>
     </section>
     <table class="files" id="files" hidden>
       <thead>
@@ -69,7 +79,9 @@
       <fieldset class="choice">
         <label><input type="radio" name="newKind" value="floppy" checked> Floppy</label>
         <label><input type="radio" name="newKind" value="disk"> Hard disk / volume</label>
+        <label><input type="radio" name="newKind" value="custom"> Custom layout</label>
       </fieldset>
+      <div data-kind="custom" hidden><div class="geo" id="newGeo"></div></div>
       <label data-kind="floppy">Format
         <select id="newFormat"></select>
       </label>
@@ -90,9 +102,14 @@
           <option value="vhd">Virtual Hard Disk (.vhd)</option>
           <option value="vhdx">Virtual Hard Disk v2 (.vhdx)</option>
           <option value="vmdk">VMware disk (.vmdk)</option>
+          <option value="vdi">VirtualBox disk (.vdi)</option>
+          <option value="qcow2">QEMU copy-on-write v2 (.qcow2)</option>
+          <option value="nhd">PC-98 T98-Next hard disk (.nhd)</option>
+          <option value="hdi">PC-98 Anex86 hard disk (.hdi)</option>
+          <option value="fdi">PC-98 Anex86 floppy (.fdi)</option>
         </select>
       </label>
-      <label class="check"><input type="checkbox" id="newDynamic" checked> Dynamic (grows as data is written; VHD, VHDX, VMDK)</label>
+      <label class="check"><input type="checkbox" id="newDynamic" checked> Dynamic (grows as data is written; VHD, VHDX, VMDK, VDI)</label>
       <label>Volume label (optional, up to 11 characters)
         <input id="newLabel" maxlength="11" autocomplete="off" spellcheck="false">
       </label>
@@ -167,6 +184,7 @@
       <label id="formatSizeWrap" hidden>Size (MB)
         <input id="formatSize" type="number" min="1" step="1" value="64">
       </label>
+      <div id="formatGeoWrap" hidden><div class="geo" id="formatGeo"></div></div>
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button value="ok" class="primary">Change format</button>
@@ -184,9 +202,14 @@
           <option value="vhd">Virtual Hard Disk (.vhd)</option>
           <option value="vhdx">Virtual Hard Disk v2 (.vhdx)</option>
           <option value="vmdk">VMware disk (.vmdk)</option>
+          <option value="vdi">VirtualBox disk (.vdi)</option>
+          <option value="qcow2">QEMU copy-on-write v2 (.qcow2)</option>
+          <option value="nhd">PC-98 T98-Next hard disk (.nhd)</option>
+          <option value="hdi">PC-98 Anex86 hard disk (.hdi)</option>
+          <option value="fdi">PC-98 Anex86 floppy (.fdi)</option>
         </select>
       </label>
-      <label class="check"><input type="checkbox" id="saveDynamic" checked> Dynamic (VHD, VHDX, VMDK)</label>
+      <label class="check"><input type="checkbox" id="saveDynamic" checked> Dynamic (VHD, VHDX, VMDK, VDI)</label>
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button value="ok" class="primary">Choose location…</button>
@@ -206,6 +229,78 @@
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button value="ok" class="primary">Choose folder…</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <template id="geoTpl">
+    <div class="grid">
+      <label>Total sectors <input name="total_sectors" type="number" min="64" step="1" required></label>
+      <label>Size <input name="size" readonly tabindex="-1"></label>
+      <label>Sectors per track <input name="sectors_per_track" type="number" min="1" max="63" required></label>
+      <label>Heads <input name="heads" type="number" min="1" max="255" required></label>
+      <label>Cluster size
+        <select name="bytes_per_cluster">
+          <option value="0">Automatic</option>
+          <option value="512">512 bytes</option><option value="1024">1 KB</option><option value="2048">2 KB</option>
+          <option value="4096">4 KB</option><option value="8192">8 KB</option><option value="16384">16 KB</option>
+          <option value="32768">32 KB</option><option value="65536">64 KB</option>
+        </select>
+      </label>
+      <label>FAT type
+        <select name="fat_bits">
+          <option value="0">Automatic</option><option value="12">FAT12</option><option value="16">FAT16</option><option value="32">FAT32</option>
+        </select>
+      </label>
+      <label>Root entries <input name="root_entries" type="number" min="0" max="65535" placeholder="0 = automatic"></label>
+      <label>FATs
+        <select name="fats"><option value="2">2</option><option value="1">1</option></select>
+      </label>
+      <label>Media byte <input name="media" spellcheck="false" placeholder="0xF8"></label>
+      <label>Hidden sectors <input name="hidden_sectors" type="number" min="0"></label>
+      <label>Drive number <input name="drive_number" spellcheck="false" placeholder="0x80"></label>
+    </div>
+    <p class="row"><button type="button" data-geo-like>Copy layout from an image or boot sector…</button></p>
+  </template>
+
+  <dialog id="propsDlg">
+    <form method="dialog">
+      <h2 id="propsTitle">Properties</h2>
+      <p class="hint" id="propsHint"></p>
+      <fieldset class="choice" id="propsAttrs">
+        <label><input type="checkbox" data-attr="read_only"> Read-only</label>
+        <label><input type="checkbox" data-attr="hidden"> Hidden</label>
+        <label><input type="checkbox" data-attr="system"> System</label>
+        <label><input type="checkbox" data-attr="archive"> Archive</label>
+      </fieldset>
+      <label>Modified <input id="propsModified" type="datetime-local" step="2" min="1980-01-01T00:00" max="2107-12-31T23:59"></label>
+      <label>Created <input id="propsCreated" type="datetime-local" step="1" min="1980-01-01T00:00" max="2107-12-31T23:59"></label>
+      <label>Accessed (date only) <input id="propsAccessed" type="date" min="1980-01-01" max="2107-12-31"></label>
+      <label class="check" id="propsRecursiveWrap"><input type="checkbox" id="propsRecursive"> Also change everything inside the selected folders</label>
+      <p class="hint">Only the fields you change are written. FAT stores modified times in 2-second steps.</p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">Apply</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="sumDlg">
+    <form method="dialog">
+      <h2>Checksums</h2>
+      <label>Of
+        <select id="sumWhat">
+          <option value="disk">The disk inside the image (same for IMA, IMZ, VHD, VHDX, VMDK copies)</option>
+          <option value="image">The image file as stored</option>
+          <option value="file">The selected file</option>
+        </select>
+      </label>
+      <dl id="sumList"></dl>
+      <menu>
+        <button type="button" id="sumCopy">Copy</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate>Close</button>
+        <button type="button" class="primary" id="sumCompute">Compute</button>
       </menu>
     </form>
   </dialog>

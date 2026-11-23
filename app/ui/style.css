@@ -221,3 +221,26 @@ dialog .row button { flex: none; }
 dialog menu .spacer { flex: 1; }
 dialog dl { margin-bottom: 4px; }
 #infoDlg dd, #bootList dd { word-break: break-all; }
+
+/* Tools menu (popover under the Tools button) */
+.popmenu {
+  margin: 0;
+  inset: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.2);
+  min-width: 220px;
+}
+.popmenu:popover-open { display: flex; flex-direction: column; gap: 2px; }
+.popmenu button { border: none; background: none; text-align: left; padding: 6px 10px; border-radius: 4px; }
+.popmenu button:hover:not(:disabled) { background: var(--panel); }
+
+/* Custom geometry fields */
+dialog .geo .grid { margin-top: 0; }
+dialog .geo p.row { margin: 0 0 8px; }
+dialog fieldset.choice { flex-wrap: wrap; }
+#sumList dd { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
+#rows tr.dragging { opacity: 0.6; }

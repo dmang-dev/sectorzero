@@ -19,20 +19,22 @@ Windows first. Linux builds come from CI; macOS and other platforms come later.
 
 | Area | Works now |
 |---|---|
-| Containers | Raw sector images (`.ima` `.img` `.vfd` `.flp` `.dsk`, short "truncated" images read as zero-padded). WinImage IMZ (zip) and WLZ (zip holding several images). VHD fixed and dynamic. VHDX (dynamic and fixed, with log replay). VMDK monolithicSparse, monolithicFlat and descriptor + extents. All read/write. |
+| Containers | Raw sector images (`.ima` `.img` `.vfd` `.flp` `.dsk`, short "truncated" images read as zero-padded), split raw sets (`.001` `.002` …). WinImage IMZ (zip) and WLZ (zip holding several images). VHD fixed, dynamic and differencing, including Virtual PC undo disks (`.vud`). VHDX (dynamic and fixed, with log replay). VMDK monolithicSparse, monolithicFlat and descriptor + extents. VirtualBox VDI (fixed and dynamic). QCOW2 v2/v3 (compressed clusters and backing files read; writes refused for encrypted, snapshotted or zstd images). PC-98 NHD, HDI and FDI. All read/write. CD images: ISO, BIN/CUE (MODE1/MODE2, 2048–2448-byte sectors), Nero NRG and Alcohol MDS/MDF, read-only. |
 | Layout | Bare FAT volumes, MBR disks (primary and logical partitions), GPT disks, ISO 9660 CD/DVD images |
+| Devices | On Linux, block devices such as `/dev/fd0` and `/dev/sdb` open like raw images (checked in a QEMU guest with a virtual floppy and USB stick). Windows drives (`\\.\PhysicalDriveN`, `\\.\A:`) are not supported yet. |
 | File systems | FAT12 / FAT16 / FAT32 with long file names (read/write). ISO 9660 with Joliet and Rock Ridge names (read-only), El Torito boot catalog |
-| Create | Every standard floppy format (160 KB to 2.88 MB, including DMF and 1.68/1.72 MB); FAT volumes and MBR or GPT hard disk images of any size, in any of the containers above |
-| Edit | Inject files and folders, extract, delete, create folders, rename/move. Host file timestamps are kept. |
-| Tools | Volume label; boot sector view/edit (OEM name, serial, geometry, hidden sectors, drive number), export, and boot-code import that keeps the BPB; MBR export/import; defragment (with optional free-space clearing); change format / resize, keeping files, dates, attributes, label, serial and boot code; save as another container; build ISO images (optionally bootable, BIOS or UEFI); save an ISO's boot image |
+| Create | Every standard floppy format (160 KB to 2.88 MB, including DMF and 1.68/1.72 MB); custom layouts (total sectors, sectors per track, heads, cluster size, root entries, FAT count and type, media byte, hidden sectors, drive number), or the layout copied from another image or boot sector; FAT volumes and MBR or GPT hard disk images of any size, in any of the writable containers above; differencing VHDs over an existing VHD |
+| Edit | Inject files and folders, extract, delete, create folders, rename/move. Host file timestamps are kept. File attributes (read-only, hidden, system, archive) and modified/created/accessed dates, also recursively. Replace a file inside an ISO in place when the new file fits in the old one's sectors. |
+| Tools | Volume label; boot sector view/edit (OEM name, serial, geometry, hidden sectors, drive number), export, and boot-code import that keeps the BPB; MBR export/import; defragment (with optional free-space clearing); change format / resize, keeping files, dates, attributes, label, serial and boot code; save as another container; truncate unused space off raw images; checksums (CRC-32, Adler-32, MD5, SHA-1, SHA-256) of the disk inside an image (the same for every container), of the image file, or of a file inside it; file lists as text, CSV or HTML; self-extracting images (`s0 sfx`); build ISO images (optionally bootable, BIOS or UEFI); save an ISO's boot image |
+| Desktop app | Everything above, plus double-click to open a file with its default program, and dragging files out to Explorer or the desktop |
 
 Verified against other software: the original IMZ tool's SDK reads images made here (IMA, IMZ, VHD fixed/dynamic,
 VMDK sparse/flat, MBR and GPT disks, defragmented and resized images) with byte-identical files,
 and SectorZero reads the SDK's VHD and VMDK output. Windows mounts the ISO images. VHDX is
 checked by this project's own tests only so far.
 
-Not yet (see RESEARCH.md §5): physical drives and floppy drives, encrypted IMZ, exFAT/NTFS, VDI/QCOW2,
-writing to ISO images, resizing partitioned disks.
+Not yet (see RESEARCH.md §5): physical drives on Windows, encrypted IMZ, exFAT/NTFS/ext2-4, writing to ISO
+images beyond in-place replacement, resizing partitioned disks.
 
 ## Layout
 
@@ -77,11 +79,12 @@ On Linux, `npx tauri build --bundles deb,appimage` builds the .deb and AppImage.
 
 ## CI and releases
 
-`.github/workflows/ci.yml` runs rustfmt, clippy (warnings are errors) and the tests on Windows,
-Linux and macOS for every push to `main` and every pull request.
+`.github/workflows/ci.yml` runs rustfmt, clippy (warnings are errors) and the tests on Windows
+(x64 and ARM64), Linux and macOS for every push to `main` and every pull request.
 
-`.github/workflows/release.yml` builds the Windows installer, the Linux .deb and AppImage, and
-zipped `s0` CLI binaries, with SHA-256 checksums. To release, bump `version` in `Cargo.toml` and
+`.github/workflows/release.yml` builds the Windows installers (x64, ARM64 and 32-bit x86), the
+Linux .deb and AppImage, and zipped `s0` CLI binaries, with SHA-256 checksums. All Windows builds
+need Windows 10 or later (Rust's minimum; the app also needs WebView2). To release, bump `version` in `Cargo.toml` and
 `app/src-tauri/tauri.conf.json`, then push a matching tag (`git tag v0.2.0 && git push origin v0.2.0`).
 The files land on a draft GitHub release to review and publish. Running the workflow by hand
 builds the same files as workflow artifacts without making a release.
@@ -95,6 +98,8 @@ s0 formats                                   # list floppy formats
 s0 new boot.ima -f 1440 -l MYDISK            # new empty 1.44 MB floppy
 s0 new boot.imz -f 1440                      # same, IMZ-compressed
 s0 new data.img -s 64M -t none               # bare FAT16 volume
+s0 new odd.ima --sectors 1600 --sectors-per-track 10 --heads 2 --fat 12 --root-entries 64
+s0 new copy.img --like other.ima             # same layout as another image or a 512-byte boot sector
 s0 new disk.vhdx -s 2G -t gpt -l DATA        # dynamic VHDX with a GPT partition (--fixed for fixed size)
 s0 inject boot.ima .\files\* --to /tools     # copy files in (folders recurse)
 s0 ls boot.ima -r                            # list everything
@@ -107,7 +112,15 @@ s0 boot boot.ima --serial 1A2B-3C4D --oem MSWIN4.1
 s0 boot boot.ima --export bs.bin             # --import copies boot code, keeps the BPB; --mbr for the MBR
 s0 defrag boot.ima --zero-free               # --analyze only reports
 s0 resize boot.ima -f 2880                   # or -s 32M; files are kept
-s0 convert boot.ima boot.vhdx                # container from the extension, or -c raw|imz|vhd|vhdx|vmdk
+s0 convert boot.ima boot.vhdx                # container from the extension, or -c raw|imz|vhd|vhdx|vmdk|vdi|qcow2|nhd|hdi|fdi
+s0 convert game.cue game.iso                 # CD images (BIN/CUE, NRG, MDS/MDF) to plain ISO
+s0 diff base.vhd changes.vud                 # differencing / undo disk; writes go to the new file only
+s0 attrib boot.ima /a.txt --set RH --modified "1995-08-24 09:30"   # -r for folders; no options shows them
+s0 checksum boot.ima                         # disk inside the image; add a path for one file, --file for the file as stored
+s0 ls boot.ima --format html -o list.html    # whole tree; also txt or csv
+s0 truncate boot.ima                         # cut free space off the end of a raw image
+s0 iso-replace cd.iso /DOCS/README.TXT new.txt
+s0 sfx boot.ima -o boot.exe                  # self-extracting image; run boot.exe --help
 s0 iso .\cdroot cd.iso -l MYCD -b boot.ima   # bootable ISO (--efi, --no-emulation)
 s0 boot-image cd.iso -o boot.ima
 ```

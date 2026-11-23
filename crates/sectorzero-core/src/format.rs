@@ -1,6 +1,9 @@
 //! Floppy disk geometries and the "new image" specification.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
+use crate::util::{le16, le32};
 
 /// A standard PC floppy geometry with the FAT parameters DOS/Windows use for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -134,6 +137,101 @@ impl FloppyFormat {
     }
 }
 
+/// A custom FAT geometry (WinImage's "custom format"). Sectors are 512 bytes. Zero in
+/// `bytes_per_cluster`, `root_entries` or `fat_bits` means "pick automatically".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Geometry {
+    pub total_sectors: u32,
+    pub sectors_per_track: u16,
+    pub heads: u16,
+    pub bytes_per_cluster: u32,
+    pub root_entries: u16,
+    /// Number of FAT copies (1 or 2).
+    pub fats: u8,
+    pub media: u8,
+    /// 12, 16, 32, or 0 for automatic.
+    pub fat_bits: u8,
+    pub hidden_sectors: u32,
+    /// BIOS drive number: 0x00 for floppies, 0x80 for hard disks.
+    pub drive_number: u8,
+}
+
+impl Geometry {
+    pub fn size_bytes(&self) -> u64 {
+        u64::from(self.total_sectors) * 512
+    }
+
+    /// The parameters of a standard floppy format, as a starting point for edits.
+    pub fn from_floppy(f: &FloppyFormat) -> Geometry {
+        Geometry {
+            total_sectors: f.total_sectors,
+            sectors_per_track: f.sectors_per_track,
+            heads: f.heads,
+            bytes_per_cluster: f.bytes_per_cluster,
+            root_entries: f.root_entries,
+            fats: 2,
+            media: f.media,
+            fat_bits: 12,
+            hidden_sectors: 0,
+            drive_number: 0x00,
+        }
+    }
+
+    /// The geometry described by a FAT boot sector (from an image or a `.bin` file).
+    pub fn from_boot_sector(s: &[u8]) -> Result<Geometry> {
+        if s.len() < 512 {
+            return Err(Error::Invalid("a boot sector is 512 bytes".into()));
+        }
+        let b = crate::fatraw::Bpb::parse(s)?;
+        if b.bps != 512 {
+            return Err(Error::Unsupported(format!(
+                "{}-byte sectors (512 only)",
+                b.bps
+            )));
+        }
+        let total = u32::try_from(b.total_sectors)
+            .map_err(|_| Error::Invalid("boot sector total sectors is too large".into()))?;
+        Ok(Geometry {
+            total_sectors: total,
+            sectors_per_track: le16(s, 24),
+            heads: le16(s, 26),
+            bytes_per_cluster: b.cluster as u32,
+            root_entries: le16(s, 17),
+            fats: s[16],
+            media: s[21],
+            fat_bits: b.fat_bits,
+            hidden_sectors: le32(s, 28),
+            drive_number: s[if b.fat_bits == 32 { 64 } else { 36 }],
+        })
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        let bad = |m: &str| Err(Error::Invalid(format!("custom geometry: {m}")));
+        if self.total_sectors < 64 {
+            return bad("at least 64 sectors are needed");
+        }
+        if !matches!(self.fats, 1 | 2) {
+            return bad("the number of FATs must be 1 or 2");
+        }
+        if !matches!(self.fat_bits, 0 | 12 | 16 | 32) {
+            return bad("the FAT type must be 12, 16 or 32");
+        }
+        if self.bytes_per_cluster != 0
+            && (!self.bytes_per_cluster.is_power_of_two()
+                || !(512..=65536).contains(&self.bytes_per_cluster))
+        {
+            return bad("the cluster size must be a power of two from 512 to 65536 bytes");
+        }
+        if self.media < 0xF0 && self.media != 0 {
+            return bad("the media descriptor must be 0xF0 to 0xFF");
+        }
+        if self.sectors_per_track == 0 || self.sectors_per_track > 63 || self.heads == 0 {
+            return bad("sectors per track must be 1-63 and heads at least 1");
+        }
+        Ok(())
+    }
+}
+
 /// What to create with [`crate::Volume::create`].
 #[derive(Debug, Clone, Copy)]
 pub enum NewImage {
@@ -143,6 +241,8 @@ pub enum NewImage {
     Volume {
         size_bytes: u64,
     },
+    /// A bare FAT volume with every BPB parameter chosen by the caller.
+    Custom(Geometry),
 }
 
 impl NewImage {
@@ -150,6 +250,7 @@ impl NewImage {
         match self {
             NewImage::Floppy(f) => f.size_bytes(),
             NewImage::Volume { size_bytes } => size_bytes / 512 * 512,
+            NewImage::Custom(g) => g.size_bytes(),
         }
     }
 }
