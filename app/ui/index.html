@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SectorZero</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="toolbar" role="toolbar" aria-label="Image actions">
+    <div class="group">
+      <button id="btnNew" title="Create a new empty image (Ctrl+N)">New</button>
+      <button id="btnOpen" title="Open an image file (Ctrl+O)">Open</button>
+      <button id="btnClose" data-needs-image title="Close the image">Close</button>
+    </div>
+    <div class="group">
+      <button id="btnInject" data-needs-image title="Copy files into the image (Ins)">Inject files</button>
+      <button id="btnInjectDir" data-needs-image title="Copy a folder into the image">Inject folder</button>
+      <button id="btnExtract" data-needs-image title="Copy the selection out (or everything if nothing is selected)">Extract</button>
+    </div>
+    <div class="group">
+      <button id="btnMkdir" data-needs-image title="New folder">New folder</button>
+      <button id="btnRename" data-needs-selection title="Rename (F2)">Rename</button>
+      <button id="btnDelete" data-needs-selection title="Delete (Del)">Delete</button>
+    </div>
+    <div class="group">
+      <button id="btnInfo" data-needs-image title="Image information">Info</button>
+    </div>
+  </header>
+
+  <nav class="crumbs" id="crumbs" aria-label="Folder path"></nav>
+
+  <main id="main">
+    <section class="empty" id="empty">
+      <h1>SectorZero</h1>
+      <p>Drop a disk image here, or use <strong>Open</strong> or <strong>New</strong>.</p>
+      <p class="hint">Supported now: raw floppy and disk images (.ima .img .vfd .flp .dsk) with FAT12/16/32, bare or MBR-partitioned.</p>
+    </section>
+    <table class="files" id="files" hidden>
+      <thead>
+        <tr><th class="c-name">Name</th><th class="c-size">Size</th><th class="c-type">Type</th><th class="c-date">Modified</th><th class="c-attr">Attr</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="dropzone" id="dropzone" hidden><span id="dropText">Drop to inject</span></div>
+  </main>
+
+  <footer class="status">
+    <span id="statusLeft">No image</span>
+    <span id="statusRight"></span>
+  </footer>
+
+  <dialog id="newDlg">
+    <form method="dialog">
+      <h2>New image</h2>
+      <label>Format
+        <select id="newFormat"></select>
+      </label>
+      <label>Volume label (optional, up to 11 characters)
+        <input id="newLabel" maxlength="11" autocomplete="off" spellcheck="false">
+      </label>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">Choose location…</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="textDlg">
+    <form method="dialog">
+      <h2 id="textTitle"></h2>
+      <input id="textInput" autocomplete="off" spellcheck="false" required>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">OK</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="infoDlg">
+    <form method="dialog">
+      <h2>Image information</h2>
+      <dl id="infoList"></dl>
+      <menu><button value="ok" class="primary">Close</button></menu>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

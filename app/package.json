@@ -1,0 +1,15 @@
+{
+  "name": "sectorzero-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SectorZero desktop app (Tauri 2 shell over sectorzero-core).",
+  "license": "MIT",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.6"
+  }
+}
