@@ -5,19 +5,25 @@ const { invoke } = window.__TAURI__.core;
 const dialog = window.__TAURI__.dialog;
 const { getCurrentWebview } = window.__TAURI__.webview;
 
-const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk'];
+const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk', 'imz', 'wlz', 'vhd', 'vhdx', 'vmdk', 'iso'];
 const IMAGE_FILTERS = [
   { name: 'Disk images', extensions: IMAGE_EXTS },
   { name: 'All files', extensions: ['*'] },
 ];
+const CONTAINER_EXT = { raw: 'ima', imz: 'imz', vhd: 'vhd', vhdx: 'vhdx', vmdk: 'vmdk' };
+const filterFor = (container) => [
+  { name: container === 'raw' ? 'Raw image' : container.toUpperCase(), extensions: container === 'raw' ? ['ima', 'img', 'vfd', 'flp'] : [CONTAINER_EXT[container]] },
+];
 
 const state = {
   image: null,       // { path, name, info }
+  partition: null,   // selected partition number, null = default
   dir: '',           // current folder inside the image, '' = root
   entries: [],
   selected: new Set(), // entry paths
   anchor: null,      // index for shift-click ranges
   busy: false,
+  formats: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -34,7 +40,9 @@ const human = (n) => {
 const join = (dir, name) => (dir ? `${dir}/${name}` : name);
 const parent = (dir) => dir.split('/').slice(0, -1).join('/');
 const baseName = (p) => p.split(/[\\/]/).pop();
+const stem = (p) => baseName(p).replace(/\.[^.]*$/, '');
 const isImageName = (p) => IMAGE_EXTS.includes(baseName(p).split('.').pop().toLowerCase());
+const writable = () => !!state.image && state.image.info.fs_writable;
 
 function typeOf(e) {
   if (e.is_dir) return 'Folder';
@@ -47,6 +55,13 @@ function setStatus(text, kind) {
   document.querySelector('.status').classList.toggle('error', kind === 'error');
 }
 
+function layoutName(i) {
+  const l = i.layout;
+  if (l.kind === 'Mbr' || l.kind === 'Gpt') return `${l.kind.toUpperCase()}${i.partition ? `, partition ${i.partition.index} (${i.partition.type_name})` : ''}`;
+  if (l.kind === 'Iso') return 'CD/DVD image';
+  return 'Bare volume';
+}
+
 function statusForImage() {
   if (!state.image) {
     setStatus('No image');
@@ -54,10 +69,13 @@ function statusForImage() {
     return;
   }
   const i = state.image.info;
-  const what = i.floppy_format || `${i.fat_type} volume`;
+  const what = i.floppy_format || `${i.fs_type} volume`;
   const part = i.partition ? `, partition ${i.partition.index}` : '';
-  setStatus(`${state.image.name} — ${what}${part}${i.label ? ` — ${i.label}` : ''}`);
-  $('statusRight').textContent = `${human(i.free_bytes)} free of ${human(i.total_bytes)}`;
+  const ro = i.fs_writable ? '' : ' (read-only)';
+  setStatus(`${state.image.name} — ${what}${part}${i.label ? ` — ${i.label}` : ''}${ro}`);
+  $('statusRight').textContent = i.fs_writable
+    ? `${human(i.free_bytes)} free of ${human(i.total_bytes)}`
+    : human(i.total_bytes);
 }
 
 async function showError(e) {
@@ -97,23 +115,65 @@ async function withOverwrite(fn) {
   }
 }
 
-function askText(title, initial = '') {
+// Show a <dialog>; resolves with the button value that closed it.
+function showDialog(dlg) {
   return new Promise((resolve) => {
-    const dlg = $('textDlg');
-    $('textTitle').textContent = title;
-    const input = $('textInput');
-    input.value = initial;
-    dlg.onclose = () => resolve(dlg.returnValue === 'ok' && input.value.trim() ? input.value.trim() : null);
+    dlg.onclose = () => resolve(dlg.returnValue);
     dlg.returnValue = '';
     dlg.showModal();
-    input.select();
   });
+}
+
+async function askText(title, initial = '', { allowEmpty = false, hint = '' } = {}) {
+  const input = $('textInput');
+  $('textTitle').textContent = title;
+  $('textHint').textContent = hint;
+  input.value = initial;
+  const p = showDialog($('textDlg'));
+  input.select();
+  const v = await p;
+  if (v !== 'ok') return null;
+  const t = input.value.trim();
+  return t || allowEmpty ? t : null;
+}
+
+function fillList(dl, rows) {
+  dl.replaceChildren(...rows.flatMap(([k, v]) => {
+    const dt = document.createElement('dt');
+    dt.textContent = k;
+    const dd = document.createElement('dd');
+    dd.textContent = v;
+    return [dt, dd];
+  }));
+}
+
+async function loadFormats() {
+  if (!state.formats) state.formats = await invoke('formats');
+  return state.formats;
+}
+
+function fillFormatSelect(sel, { withDisk = false, selected = '1440' } = {}) {
+  sel.replaceChildren();
+  for (const f of state.formats) {
+    const o = document.createElement('option');
+    o.value = f.id;
+    o.textContent = f.name;
+    if (f.id === selected) o.selected = true;
+    sel.append(o);
+  }
+  if (withDisk) {
+    const o = document.createElement('option');
+    o.value = 'disk';
+    o.textContent = 'Hard disk / volume image (size below)';
+    sel.append(o);
+  }
 }
 
 // ---------- image lifecycle ----------
 
-async function openImage(path) {
-  state.image = await invoke('open_image', { path, partition: null });
+async function openImage(path, partition = null) {
+  state.image = await invoke('open_image', { path, partition, member: null });
+  state.partition = partition;
   state.dir = '';
   await refresh();
 }
@@ -137,7 +197,7 @@ async function refresh(keepSelection = false) {
 
 async function closeImage() {
   await invoke('close_image');
-  Object.assign(state, { image: null, dir: '', entries: [], anchor: null });
+  Object.assign(state, { image: null, partition: null, dir: '', entries: [], anchor: null });
   state.selected.clear();
   render();
 }
@@ -149,30 +209,34 @@ async function actionOpen() {
   if (path) await openImage(path);
 }
 
-let formatsLoaded = false;
+function syncNewDialog() {
+  const kind = document.querySelector('input[name="newKind"]:checked').value;
+  document.querySelectorAll('#newDlg [data-kind]').forEach((el) => { el.hidden = el.dataset.kind !== kind; });
+  const c = $('newContainer').value;
+  $('newDynamic').disabled = !['vhd', 'vhdx', 'vmdk'].includes(c);
+}
+
 async function actionNew() {
-  if (!formatsLoaded) {
-    const formats = await invoke('formats');
-    const sel = $('newFormat');
-    for (const f of formats) {
-      const o = document.createElement('option');
-      o.value = f.id;
-      o.textContent = f.name;
-      if (f.id === '1440') o.selected = true;
-      sel.append(o);
-    }
-    formatsLoaded = true;
-  }
-  const dlg = $('newDlg');
-  const chosen = await new Promise((resolve) => {
-    dlg.onclose = () => resolve(dlg.returnValue === 'ok');
-    dlg.returnValue = '';
-    dlg.showModal();
-  });
-  if (!chosen) return;
-  const path = await dialog.save({ title: 'Save new image as', defaultPath: 'disk.ima', filters: IMAGE_FILTERS });
+  await loadFormats();
+  if (!$('newFormat').options.length) fillFormatSelect($('newFormat'));
+  syncNewDialog();
+  if (await showDialog($('newDlg')) !== 'ok') return;
+  const kind = document.querySelector('input[name="newKind"]:checked').value;
+  const container = $('newContainer').value;
+  const ext = CONTAINER_EXT[container] === 'ima' && kind === 'disk' ? 'img' : CONTAINER_EXT[container];
+  const path = await dialog.save({ title: 'Save new image as', defaultPath: `disk.${ext}`, filters: filterFor(container) });
   if (!path) return;
-  state.image = await invoke('new_image', { path, format: $('newFormat').value, label: $('newLabel').value || null });
+  const spec = {
+    path,
+    format: kind === 'floppy' ? $('newFormat').value : null,
+    size_mb: kind === 'disk' ? Number($('newSize').value) : null,
+    label: $('newLabel').value || null,
+    scheme: kind === 'disk' ? $('newScheme').value : 'none',
+    container,
+    dynamic: !$('newDynamic').disabled && $('newDynamic').checked,
+  };
+  state.image = await invoke('new_image', { spec });
+  state.partition = null;
   state.dir = '';
   await refresh();
 }
@@ -237,30 +301,213 @@ async function actionRename() {
   render();
 }
 
+async function actionLabel() {
+  const label = await askText('Volume label', state.image.info.label, {
+    allowEmpty: true, hint: 'Up to 11 characters. Leave empty to remove the label.',
+  });
+  if (label === null) return;
+  const keep = state.image.path;
+  state.image = await invoke('set_label', { label: label || null });
+  state.image.path = keep;
+  render();
+  setStatus(label ? `Label set to ${label.toUpperCase()}` : 'Label removed');
+}
+
+function bootRows(b) {
+  return [
+    ['File system', b.fat_type],
+    ['Jump', b.jump],
+    ['Bytes per sector', b.bytes_per_sector],
+    ['Sectors per cluster', b.sectors_per_cluster],
+    ['Reserved sectors', b.reserved_sectors],
+    ['FATs', b.fats],
+    ['Root entries', b.root_entries],
+    ['Total sectors', fmtBytes(b.total_sectors)],
+    ['Media', b.media],
+    ['Sectors per FAT', b.sectors_per_fat],
+    ['Label (boot sector)', b.label ?? '—'],
+    ['FS type field', b.fs_type ?? '—'],
+    ['Boot code', `${b.has_boot_code ? 'present' : 'none'}${b.signature_55aa ? '' : ', no 55AA signature'}`],
+  ].map(([k, v]) => [k, String(v)]);
+}
+
+function fillBootForm(b) {
+  fillList($('bootList'), bootRows(b));
+  $('bootOem').value = b.oem_name.trimEnd();
+  $('bootSerial').value = b.volume_id ?? '';
+  $('bootSerial').disabled = !b.volume_id;
+  $('bootSpt').value = b.sectors_per_track;
+  $('bootHeads').value = b.heads;
+  $('bootHidden').value = b.hidden_sectors;
+  $('bootDrive').value = b.drive_number;
+}
+
+async function actionBoot() {
+  let b = await invoke('boot_info');
+  for (;;) {
+    fillBootForm(b);
+    const v = await showDialog($('bootDlg'));
+    if (v === 'export') {
+      const dest = await dialog.save({ title: 'Save boot sector', defaultPath: `${stem(state.image.name)}.bin`, filters: [{ name: 'Boot sector', extensions: ['bin', 'bs'] }] });
+      if (dest) { await invoke('export_boot', { dest }); setStatus(`Boot sector saved to ${dest}`); }
+    } else if (v === 'import') {
+      const src = await dialog.open({ title: 'Boot sector file', multiple: false, filters: [{ name: 'Boot sector', extensions: ['bin', 'bs', 'ima', 'img'] }, { name: 'All files', extensions: ['*'] }] });
+      if (src) { b = await invoke('import_boot', { src }); setStatus('Boot code imported (disk geometry kept)'); }
+    } else if (v === 'save') {
+      const num = (id) => ($(id).value === '' ? null : Number($(id).value));
+      const drive = $('bootDrive').value.trim();
+      const edit = {
+        oem_name: $('bootOem').value,
+        volume_id: $('bootSerial').disabled ? null : $('bootSerial').value.trim() || null,
+        sectors_per_track: num('bootSpt'),
+        heads: num('bootHeads'),
+        hidden_sectors: num('bootHidden'),
+        drive_number: drive ? parseInt(drive, drive.toLowerCase().startsWith('0x') ? 16 : 10) : null,
+      };
+      b = await invoke('edit_boot', { edit });
+      await refreshInfo();
+      render();
+      setStatus('Boot sector saved');
+      return;
+    } else {
+      return;
+    }
+  }
+}
+
+function defragRows(r, analysed) {
+  const rows = [
+    ['Files / folders', `${r.files} / ${r.dirs}`],
+    ['Fragmented', `${r.fragmented} (${r.fragments} extents)`],
+    ['Used clusters', fmtBytes(r.used_clusters)],
+    ['Free clusters', fmtBytes(r.free_clusters)],
+    ['Cluster size', `${fmtBytes(r.cluster_size)} bytes`],
+  ];
+  if (r.lost_clusters) rows.push(['Lost clusters', `${r.lost_clusters} (will be freed)`]);
+  if (!analysed) rows.push(['Moved', `${fmtBytes(r.moved_clusters)} clusters`]);
+  return rows;
+}
+
+async function actionDefrag() {
+  const r = await invoke('defrag', { analyze: true, zeroFree: false });
+  fillList($('defragList'), defragRows(r, true));
+  $('defragGo').textContent = r.fragmented ? 'Defragment' : 'Defragment anyway';
+  if (await showDialog($('defragDlg')) !== 'ok') return;
+  const done = await invoke('defrag', { analyze: false, zeroFree: $('defragZero').checked });
+  await refreshInfo();
+  await refresh(true);
+  setStatus(`Defragmented: ${done.moved_clusters} cluster(s) moved, ${done.fragments} extent(s) now`);
+}
+
+async function actionFormat() {
+  await loadFormats();
+  fillFormatSelect($('formatSel'), { withDisk: true, selected: '' });
+  const sync = () => { $('formatSizeWrap').hidden = $('formatSel').value !== 'disk'; };
+  $('formatSel').onchange = sync;
+  $('formatSize').value = Math.max(1, Math.round(state.image.info.volume_size / 1048576));
+  sync();
+  if (await showDialog($('formatDlg')) !== 'ok') return;
+  const disk = $('formatSel').value === 'disk';
+  const keep = state.image.path;
+  state.image = await invoke('change_format', {
+    format: disk ? null : $('formatSel').value,
+    sizeMb: disk ? Number($('formatSize').value) : null,
+  });
+  state.image.path = keep;
+  state.dir = '';
+  await refresh();
+  setStatus(`Changed format to ${state.image.info.floppy_format || human(state.image.info.volume_size)}`);
+}
+
+async function actionSaveAs() {
+  const sync = () => { $('saveDynamic').disabled = !['vhd', 'vhdx', 'vmdk'].includes($('saveContainer').value); };
+  $('saveContainer').onchange = sync;
+  sync();
+  if (await showDialog($('saveAsDlg')) !== 'ok') return;
+  const container = $('saveContainer').value;
+  const dest = await dialog.save({ title: 'Save a copy as', defaultPath: `${stem(state.image.name)}.${CONTAINER_EXT[container]}`, filters: filterFor(container) });
+  if (!dest) return;
+  const r = await invoke('save_as', { dest, container, dynamic: !$('saveDynamic').disabled && $('saveDynamic').checked });
+  setStatus(`Saved ${baseName(dest)} (${human(r.bytes)}, ${human(r.stored)} of data)`);
+  const open = await dialog.ask(`Saved ${baseName(dest)}. Open it now?`, { title: 'Save as', kind: 'info' });
+  if (open) await openImage(dest);
+}
+
+async function actionIso() {
+  $('isoBootPick').onclick = async () => {
+    const p = await dialog.open({ title: 'Boot image', multiple: false, filters: [{ name: 'Boot images', extensions: ['ima', 'img', 'bin', 'efi'] }, { name: 'All files', extensions: ['*'] }] });
+    if (p) $('isoBoot').value = p;
+  };
+  $('isoBootClear').onclick = () => { $('isoBoot').value = ''; };
+  if (await showDialog($('isoDlg')) !== 'ok') return;
+  const folder = await dialog.open({ title: 'Folder to put on the CD', directory: true, multiple: false });
+  if (!folder) return;
+  const dest = await dialog.save({ title: 'Save ISO image as', defaultPath: `${baseName(folder) || 'cd'}.iso`, filters: [{ name: 'ISO image', extensions: ['iso'] }] });
+  if (!dest) return;
+  const r = await invoke('make_iso', {
+    folder, dest, label: $('isoLabel').value, boot: $('isoBoot').value || null, efi: $('isoEfi').checked,
+  });
+  setStatus(`Built ${baseName(dest)}: ${r.files} file(s), ${human(r.image_size)}${r.bootable ? ', bootable' : ''}`);
+  const open = await dialog.ask(`Built ${baseName(dest)}. Open it now?`, { title: 'Build ISO', kind: 'info' });
+  if (open) await openImage(dest);
+}
+
+async function actionBootImage() {
+  const entries = state.image.info.iso?.boot_entries ?? [];
+  if (!entries.length) {
+    await dialog.message('This ISO has no El Torito boot catalog.', { title: 'Boot image' });
+    return;
+  }
+  let entry = entries[0];
+  if (entries.length > 1) {
+    const list = entries.map((e) => `${e.index}: ${e.platform}, ${e.media}, ${human(e.image_size)}`).join('\n');
+    const n = await askText('Boot entry number', '1', { hint: list });
+    if (!n) return;
+    entry = entries.find((e) => e.index === Number(n));
+    if (!entry) throw new Error(`There is no boot entry ${n}.`);
+  }
+  const floppy = entry.media.includes('floppy');
+  const dest = await dialog.save({ title: 'Save boot image', defaultPath: `${stem(state.image.name)}-boot.${floppy ? 'ima' : 'img'}` });
+  if (!dest) return;
+  const n = await invoke('export_boot_image', { entry: entry.index, dest });
+  setStatus(`Boot image saved to ${dest} (${fmtBytes(n)} bytes)`);
+}
+
 async function actionInfo() {
   await refreshInfo();
   const i = state.image.info;
+  const c = i.container;
   const rows = [
     ['File', state.image.path],
-    ['Layout', i.partition ? `MBR, partition ${i.partition.index} (${i.partition.type_name})` : 'Bare volume'],
-    ['File system', i.fat_type],
-    ['Format', i.floppy_format || '—'],
-    ['Label', i.label || '(none)'],
-    ['Serial number', i.volume_id],
-    ['OEM name', i.oem_name],
-    ['Sector size', `${i.bytes_per_sector} bytes`],
-    ['Cluster size', `${fmtBytes(i.cluster_size)} bytes`],
-    ['Capacity', `${fmtBytes(i.total_bytes)} bytes (${fmtBytes(i.total_clusters)} clusters)`],
-    ['Free', `${fmtBytes(i.free_bytes)} bytes (${fmtBytes(i.free_clusters)} clusters)`],
+    ['Container', `${c.kind.toUpperCase()} (${c.variant})${c.member ? `, member ${c.member}` : ''}`],
+    ['Disk size', `${fmtBytes(c.virtual_size)} bytes`],
+    ['Layout', layoutName(i)],
+    ['File system', i.fs_type + (i.fs_writable ? '' : ' (read-only)')],
   ];
-  const dl = $('infoList');
-  dl.replaceChildren(...rows.flatMap(([k, v]) => {
-    const dt = document.createElement('dt');
-    dt.textContent = k;
-    const dd = document.createElement('dd');
-    dd.textContent = v;
-    return [dt, dd];
-  }));
+  if (c.comment) rows.push(['Comment', c.comment]);
+  if (i.iso) {
+    rows.push(['Volume ID', i.label || '(none)']);
+    if (i.iso.application) rows.push(['Application', i.iso.application]);
+    if (i.iso.publisher) rows.push(['Publisher', i.iso.publisher]);
+    if (i.iso.created) rows.push(['Created', i.iso.created]);
+    rows.push(['Size', `${fmtBytes(i.total_bytes)} bytes`]);
+    for (const b of i.iso.boot_entries) rows.push([`Boot entry ${b.index}`, `${b.platform}, ${b.media}, ${fmtBytes(b.image_size)} bytes`]);
+  } else {
+    rows.push(
+      ['Format', i.floppy_format || '—'],
+      ['Label', i.label || '(none)'],
+      ['Serial number', i.volume_id],
+      ['OEM name', i.oem_name],
+      ['Sector size', `${i.bytes_per_sector} bytes`],
+      ['Cluster size', `${fmtBytes(i.cluster_size)} bytes`],
+      ['Capacity', `${fmtBytes(i.total_bytes)} bytes (${fmtBytes(i.total_clusters)} clusters)`],
+      ['Free', `${fmtBytes(i.free_bytes)} bytes (${fmtBytes(i.free_clusters)} clusters)`],
+    );
+  }
+  for (const p of i.layout.partitions ?? []) {
+    rows.push([`Partition ${p.index}`, `${p.type_name}${p.name ? ` "${p.name}"` : ''}, ${human(p.sectors * p.sector_size)} at sector ${fmtBytes(p.start_lba)}, ${p.fs ?? 'no known file system'}`]);
+  }
+  fillList($('infoList'), rows);
   $('infoDlg').showModal();
 }
 
@@ -274,10 +521,29 @@ function enter(dir) {
 function updateButtons() {
   const has = !!state.image;
   document.querySelectorAll('[data-needs-image]').forEach((b) => { b.disabled = !has || state.busy; });
-  document.querySelectorAll('[data-needs-selection]').forEach((b) => { b.disabled = !has || state.busy || state.selected.size === 0; });
+  document.querySelectorAll('[data-needs-writable]').forEach((b) => { b.disabled = !writable() || state.busy; });
+  document.querySelectorAll('[data-needs-selection]').forEach((b) => { b.disabled ||= state.selected.size === 0; });
   $('btnRename').disabled ||= state.selected.size !== 1;
-  $('btnNew').disabled = state.busy;
-  $('btnOpen').disabled = state.busy;
+  for (const id of ['btnNew', 'btnOpen', 'btnIso']) $(id).disabled = state.busy;
+  const iso = has && state.image.info.iso;
+  $('btnBootImage').hidden = !iso;
+  for (const id of ['btnLabel', 'btnBoot', 'btnDefrag', 'btnFormat']) $(id).hidden = !!iso;
+  $('btnFormat').disabled ||= !has || state.image.info.layout.kind !== 'BareVolume';
+  $('partSel').disabled = state.busy;
+}
+
+function renderPartitions() {
+  const parts = state.image?.info.layout.partitions ?? [];
+  $('partWrap').hidden = parts.length < 2;
+  const sel = $('partSel');
+  sel.replaceChildren();
+  for (const p of parts) {
+    const o = document.createElement('option');
+    o.value = p.index;
+    o.textContent = `${p.index}: ${p.type_name}${p.name ? ` "${p.name}"` : ''} — ${human(p.sectors * p.sector_size)}${p.fs ? '' : ' (unreadable)'}`;
+    o.selected = state.image.info.partition?.index === p.index;
+    sel.append(o);
+  }
 }
 
 function renderCrumbs() {
@@ -332,6 +598,7 @@ function render() {
   $('empty').hidden = has;
   $('files').hidden = !has;
   renderCrumbs();
+  renderPartitions();
   statusForImage();
   const tbody = $('rows');
   tbody.replaceChildren();
@@ -388,7 +655,17 @@ $('btnExtract').onclick = () => run(actionExtract);
 $('btnMkdir').onclick = () => run(actionMkdir);
 $('btnRename').onclick = () => run(actionRename);
 $('btnDelete').onclick = () => run(actionDelete);
+$('btnLabel').onclick = () => run(actionLabel);
+$('btnBoot').onclick = () => run(actionBoot);
+$('btnDefrag').onclick = () => run(actionDefrag);
+$('btnFormat').onclick = () => run(actionFormat);
+$('btnBootImage').onclick = () => run(actionBootImage);
+$('btnSaveAs').onclick = () => run(actionSaveAs);
+$('btnIso').onclick = () => run(actionIso);
 $('btnInfo').onclick = () => run(actionInfo);
+$('partSel').onchange = () => run(() => openImage(state.image.path, Number($('partSel').value)));
+document.querySelectorAll('input[name="newKind"]').forEach((r) => { r.onchange = syncNewDialog; });
+$('newContainer').onchange = syncNewDialog;
 
 document.addEventListener('keydown', (ev) => {
   if (document.querySelector('dialog[open]')) return;
@@ -400,9 +677,9 @@ document.addEventListener('keydown', (ev) => {
     ev.preventDefault();
     state.entries.forEach((e) => state.selected.add(e.path));
     render();
-  } else if (k === 'Delete') run(actionDelete);
-  else if (k === 'Insert') run(actionInject);
-  else if (k === 'F2') run(actionRename);
+  } else if (k === 'Delete' && writable()) run(actionDelete);
+  else if (k === 'Insert' && writable()) run(actionInject);
+  else if (k === 'F2' && writable()) run(actionRename);
   else if (k === 'Backspace' && state.dir) run(() => enter(parent(state.dir)));
   else if (k === 'Enter' && state.selected.size === 1) {
     const e = state.entries.find((x) => state.selected.has(x.path));
@@ -414,8 +691,8 @@ document.addEventListener('keydown', (ev) => {
 getCurrentWebview().onDragDropEvent((event) => {
   const p = event.payload;
   const zone = $('dropzone');
+  const opening = !state.image || !writable();
   if (p.type === 'enter' || p.type === 'over') {
-    const opening = !state.image;
     $('dropText').textContent = opening ? 'Drop to open the image' : `Drop to inject into /${state.dir}`;
     zone.hidden = false;
   } else if (p.type === 'leave') {
@@ -423,7 +700,7 @@ getCurrentWebview().onDragDropEvent((event) => {
   } else if (p.type === 'drop') {
     zone.hidden = true;
     const paths = p.paths || [];
-    if (!state.image) {
+    if (opening) {
       const img = paths.find(isImageName) || paths[0];
       if (img) run(() => openImage(img));
     } else {

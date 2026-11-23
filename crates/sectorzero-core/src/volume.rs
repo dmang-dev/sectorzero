@@ -1,10 +1,11 @@
-//! A mounted FAT volume inside an image file, and the WinImage-style operations on it.
+//! A mounted volume inside an image (FAT read/write via fatfs, or ISO 9660 read-only), and
+//! the WinImage-style operations on it.
 //!
 //! Paths inside the image use `/` (a `\` is accepted too) and are relative to the root;
-//! `""` or `"/"` is the root. Name matching is case-insensitive, as on FAT.
+//! `""` or `"/"` is the root. Name matching is case-insensitive.
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -12,20 +13,19 @@ use chrono::{Datelike, Local, TimeZone};
 use fatfs::{FatType, FileAttributes, FileSystem, FormatVolumeOptions, FsOptions};
 use serde::Serialize;
 
-use crate::disk::{Layout, PartitionInfo, Window, layout_of, read_sector0};
+use crate::container::{self, ContainerInfo, ContainerKind, SharedDisk};
 use crate::error::{Error, Result, display};
+use crate::fatraw;
 use crate::format::{FloppyFormat, NewImage};
+use crate::image::{Image, OpenOptions};
+use crate::iso::{IsoFs, IsoInfo};
+use crate::partition::{self, BASIC_DATA, Layout, PartitionInfo, PartitionScheme};
+use crate::util::*;
+use crate::window::{Window, lock};
 
+type FatFs = FileSystem<Window>;
 type FatDir<'a> = fatfs::Dir<'a, Window>;
 type FatEntry<'a> = fatfs::DirEntry<'a, Window>;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct OpenOptions {
-    /// Open for modification. Without it every write is refused before touching the file.
-    pub writable: bool,
-    /// 1-based MBR partition to open. Default: the first FAT partition (or the bare volume).
-    pub partition: Option<usize>,
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Attributes {
@@ -59,7 +59,7 @@ pub struct Entry {
     pub path: String,
     pub is_dir: bool,
     pub size: u64,
-    /// Local time, `YYYY-MM-DD HH:MM:SS`.
+    /// `YYYY-MM-DD HH:MM:SS` (local time for FAT).
     pub modified: String,
     pub attributes: Attributes,
 }
@@ -73,7 +73,8 @@ pub struct Stats {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VolumeInfo {
-    pub fat_type: &'static str,
+    /// "FAT12", "FAT16", "FAT32" or "ISO 9660".
+    pub fs_type: String,
     pub label: String,
     pub volume_id: String,
     pub oem_name: String,
@@ -83,228 +84,343 @@ pub struct VolumeInfo {
     pub free_clusters: u32,
     pub total_bytes: u64,
     pub free_bytes: u64,
-    /// Byte offset of the volume inside the image file (non-zero for a partition).
+    /// Byte offset of the volume inside the virtual disk (non-zero for a partition).
     pub volume_offset: u64,
     pub volume_size: u64,
     pub layout: Layout,
     pub partition: Option<PartitionInfo>,
     /// The standard floppy geometry this matches, if any.
     pub floppy_format: Option<&'static str>,
+    /// Opened for writing.
     pub writable: bool,
+    /// Whether this file system can be modified at all (ISO 9660 cannot).
+    pub fs_writable: bool,
+    pub container: ContainerInfo,
+    pub iso: Option<IsoInfo>,
+}
+
+/// Options for [`Volume::create`].
+#[derive(Debug, Clone, Default)]
+pub struct CreateOptions {
+    pub label: Option<String>,
+    /// Container format. Default: from the file extension (`.vhdx`, `.imz`, …; raw otherwise).
+    pub container: Option<ContainerKind>,
+    /// Partition table for hard disk images. Floppies are always bare.
+    pub scheme: PartitionScheme,
+    /// Sparse/dynamic container (VHD, VHDX, VMDK). Fixed otherwise.
+    pub dynamic: bool,
+    pub overwrite: bool,
+}
+
+enum Fs {
+    Fat(Box<FatFs>),
+    Iso(Box<IsoFs>),
+}
+
+/// Syncs the container when dropped, after the file system (declared before it) unmounted.
+struct SyncOnDrop(SharedDisk);
+
+impl Drop for SyncOnDrop {
+    fn drop(&mut self) {
+        if let Ok(mut d) = self.0.lock() {
+            let _ = d.sync();
+        }
+    }
 }
 
 pub struct Volume {
-    fs: FileSystem<Window>,
+    fs: Fs,
+    _sync: SyncOnDrop,
+    image: Image,
     boot: [u8; 512],
-    layout: Layout,
-    partition: Option<PartitionInfo>,
-    offset: u64,
-    size: u64,
-    writable: bool,
 }
 
-fn le16(s: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([s[at], s[at + 1]])
-}
-fn le32(s: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([s[at], s[at + 1], s[at + 2], s[at + 3]])
-}
-
-/// Volume size declared by a FAT boot sector, in bytes.
-fn bpb_volume_bytes(s: &[u8; 512]) -> u64 {
-    let total16 = le16(s, 19);
-    let total = if total16 != 0 {
-        u32::from(total16)
-    } else {
-        le32(s, 32)
+/// Format a FAT file system into `w`. `hidden` is the partition's first LBA.
+fn format_fat(
+    w: Window,
+    spec: &NewImage,
+    label: Option<[u8; 11]>,
+    hidden: u64,
+    volume_id: Option<u32>,
+) -> Result<()> {
+    let sectors = w.len() / 512;
+    if sectors < 64 {
+        return Err(Error::Invalid("image is too small".into()));
+    }
+    let total = u32::try_from(sectors)
+        .map_err(|_| Error::Invalid("volume is too large for FAT (2 TiB limit)".into()))?;
+    let mut fmt = FormatVolumeOptions::new()
+        .bytes_per_sector(512)
+        .total_sectors(total)
+        .fats(2)
+        .volume_id(volume_id.unwrap_or_else(new_volume_id));
+    fmt = match spec {
+        NewImage::Floppy(f) => fmt
+            .fat_type(FatType::Fat12)
+            .bytes_per_cluster(f.bytes_per_cluster)
+            .max_root_dir_entries(f.root_entries)
+            .media(f.media)
+            .sectors_per_track(f.sectors_per_track)
+            .heads(f.heads)
+            .drive_num(0x00),
+        // WinImage's defaults for hard disk / removable volume images.
+        NewImage::Volume { .. } if hidden == 0 => fmt
+            .media(0xF8)
+            .sectors_per_track(32)
+            .heads(64)
+            .drive_num(0x80),
+        NewImage::Volume { .. } => fmt
+            .media(0xF8)
+            .sectors_per_track(63)
+            .heads(255)
+            .drive_num(0x80),
     };
-    u64::from(total) * u64::from(le16(s, 11))
+    if let Some(l) = label {
+        fmt = fmt.volume_label(l);
+    }
+    let disk = w;
+    fatfs::format_volume(disk, fmt).map_err(|e| Error::Invalid(format!("cannot format: {e}")))?;
+    Ok(())
 }
 
 impl Volume {
-    /// Open the FAT volume in an image file.
-    pub fn open(path: &Path, opts: OpenOptions) -> Result<Volume> {
-        let mut file = File::options().read(true).write(opts.writable).open(path)?;
-        let file_len = file.metadata()?.len();
-        let sector0 = read_sector0(&mut file)?;
-        let layout = layout_of(&sector0);
-
-        let (offset, size, partition) = match &layout {
-            Layout::BareVolume => {
-                if let Some(n) = opts.partition.filter(|&n| n != 1) {
-                    return Err(Error::Invalid(format!(
-                        "image has no partition table, so there is no partition {n}"
-                    )));
+    /// Open the volume in an image file.
+    pub fn open(path: &Path, opts: &OpenOptions) -> Result<Volume> {
+        let image = Image::open(path, opts)?;
+        let w = image.window();
+        let mut boot = [0u8; 512];
+        let fs = match (&image.layout, &image.partition) {
+            (Layout::Iso, _) => Fs::Iso(Box::new(IsoFs::open(w)?)),
+            (_, Some(p)) if !p.is_fat => {
+                return Err(match p.fs {
+                    Some(fs) => Error::Unsupported(format!(
+                        "partition {} holds {fs}; only FAT is readable so far",
+                        p.index
+                    )),
+                    None => Error::NotFat(format!(
+                        "partition {} ({}) has no FAT file system",
+                        p.index, p.type_name
+                    )),
+                });
+            }
+            _ => {
+                let mut w = w;
+                w.read_at(0, &mut boot)?;
+                if !partition::looks_like_fat_boot_sector(&boot) {
+                    let what = if &boot[3..11] == b"NTFS    " {
+                        "NTFS"
+                    } else if &boot[3..11] == b"EXFAT   " {
+                        "exFAT"
+                    } else {
+                        ""
+                    };
+                    return Err(if what.is_empty() {
+                        Error::NotFat("no FAT boot sector".into())
+                    } else {
+                        Error::Unsupported(format!("{what} volumes (only FAT is readable so far)"))
+                    });
                 }
-                (0, file_len.max(bpb_volume_bytes(&sector0)), None)
-            }
-            Layout::Mbr(parts) => {
-                let part = match opts.partition {
-                    Some(n) => parts
-                        .iter()
-                        .find(|p| p.index == n)
-                        .ok_or_else(|| Error::NotFound(format!("partition {n}")))?,
-                    None => parts
-                        .iter()
-                        .find(|p| p.is_fat)
-                        .ok_or_else(|| Error::Unsupported("the MBR has no FAT partition".into()))?,
-                };
-                (part.offset(), part.size_bytes(), Some(part.clone()))
-            }
-            Layout::Gpt => {
-                return Err(Error::Unsupported(
-                    "GPT partitioned images (coming later)".into(),
-                ));
-            }
-            Layout::Unknown => {
-                return Err(Error::NotFat(
-                    "sector 0 is neither a FAT boot sector nor an MBR partition table".into(),
-                ));
+                let fs = FileSystem::new(w, FsOptions::new().update_accessed_date(false))
+                    .map_err(|e| Error::NotFat(e.to_string()))?;
+                Fs::Fat(Box::new(fs))
             }
         };
-
-        let boot = if offset == 0 {
-            sector0
-        } else {
-            let mut s = [0u8; 512];
-            file.seek(SeekFrom::Start(offset))?;
-            file.read_exact(&mut s)?;
-            s
-        };
-
-        let window = Window::new(file, offset, size, opts.writable);
-        let fs = FileSystem::new(window, FsOptions::new().update_accessed_date(false))
-            .map_err(|e| Error::NotFat(e.to_string()))?;
         Ok(Volume {
             fs,
+            _sync: SyncOnDrop(image.disk.clone()),
+            image,
             boot,
-            layout,
-            partition,
-            offset,
-            size,
-            writable: opts.writable,
         })
     }
 
     /// Create a new, empty, formatted image file.
-    pub fn create(path: &Path, spec: NewImage, label: Option<&str>, overwrite: bool) -> Result<()> {
+    pub fn create(path: &Path, spec: NewImage, opts: &CreateOptions) -> Result<()> {
         let size = spec.size_bytes();
-        let sectors = size / 512;
-        if sectors < 64 {
-            return Err(Error::Invalid("image is too small".into()));
+        if matches!(spec, NewImage::Floppy(_)) && opts.scheme != PartitionScheme::None {
+            return Err(Error::Invalid(
+                "floppy images have no partition table".into(),
+            ));
         }
-        let total_sectors = u32::try_from(sectors)
-            .map_err(|_| Error::Invalid("image is too large for FAT".into()))?;
-        let label = label.map(encode_label).transpose()?;
-
-        let mut o = File::options();
-        o.read(true).write(true);
-        if overwrite {
-            o.create(true).truncate(true);
-        } else {
-            o.create_new(true);
-        }
-        let file = o.open(path).map_err(|e| match e.kind() {
-            io::ErrorKind::AlreadyExists => Error::Exists(path.display().to_string()),
-            _ => Error::Io(e),
-        })?;
-        file.set_len(size)?;
-
-        let mut fmt = FormatVolumeOptions::new()
-            .bytes_per_sector(512)
-            .total_sectors(total_sectors)
-            .fats(2)
-            .volume_id(new_volume_id());
-        fmt = match spec {
-            NewImage::Floppy(f) => fmt
-                .fat_type(FatType::Fat12)
-                .bytes_per_cluster(f.bytes_per_cluster)
-                .max_root_dir_entries(f.root_entries)
-                .media(f.media)
-                .sectors_per_track(f.sectors_per_track)
-                .heads(f.heads)
-                .drive_num(0x00),
-            // WinImage's defaults for hard disk / removable partition images.
-            NewImage::Volume { .. } => fmt
-                .media(0xF8)
-                .sectors_per_track(32)
-                .heads(64)
-                .drive_num(0x80),
-        };
-        if let Some(l) = label {
-            fmt = fmt.volume_label(l);
-        }
-        let result = fatfs::format_volume(Window::new(file, 0, size, true), fmt);
+        let label = opts.label.as_deref().map(encode_label).transpose()?;
+        let (start, sectors) = partition::new_partition_extent(opts.scheme, size / 512)?;
+        let kind = opts
+            .container
+            .unwrap_or_else(|| ContainerKind::from_path(path));
+        let disk = container::share(container::create(
+            path,
+            kind,
+            size,
+            opts.dynamic,
+            opts.overwrite,
+        )?);
+        let result = (|| -> Result<()> {
+            format_fat(
+                Window::new(disk.clone(), start * 512, sectors * 512, true),
+                &spec,
+                label,
+                start,
+                None,
+            )?;
+            let mut d = lock(&disk)?;
+            if start != 0 {
+                // fatfs has no hidden-sectors option: patch the BPB.
+                let mut boot = [0u8; 512];
+                d.read_at(start * 512, &mut boot)?;
+                put_le32(&mut boot, 28, start as u32);
+                d.write_at(start * 512, &boot)?;
+                let bits = fatraw::Bpb::parse(&boot)?.fat_bits;
+                if bits == 32 {
+                    let backup = u64::from(le16(&boot, 50));
+                    if backup != 0 {
+                        d.write_at((start + backup) * 512, &boot)?;
+                    }
+                }
+                match opts.scheme {
+                    PartitionScheme::Mbr => partition::write_mbr(
+                        d.as_mut(),
+                        partition::mbr_type_for(bits, sectors),
+                        start,
+                        sectors,
+                    )?,
+                    PartitionScheme::Gpt => partition::write_gpt(
+                        d.as_mut(),
+                        BASIC_DATA,
+                        "Basic data partition",
+                        start,
+                        sectors,
+                    )?,
+                    PartitionScheme::None => {}
+                }
+            }
+            d.sync()?;
+            Ok(())
+        })();
         if let Err(e) = result {
+            drop(disk);
             let _ = fs::remove_file(path);
-            return Err(Error::Invalid(format!("cannot format: {e}")));
+            return Err(e);
         }
         Ok(())
     }
 
+    pub fn image(&self) -> &Image {
+        &self.image
+    }
+
     pub fn info(&self) -> Result<VolumeInfo> {
-        let stats = self.fs.stats()?;
-        let s = &self.boot;
-        let bytes_per_sector = le16(s, 11);
-        let total16 = le16(s, 19);
-        let total_sectors = if total16 != 0 {
-            u32::from(total16)
-        } else {
-            le32(s, 32)
-        };
-        let id = self.fs.volume_id();
-        let cluster = u64::from(stats.cluster_size());
-        Ok(VolumeInfo {
-            fat_type: match self.fs.fat_type() {
-                FatType::Fat12 => "FAT12",
-                FatType::Fat16 => "FAT16",
-                FatType::Fat32 => "FAT32",
-            },
-            label: self.label()?,
-            volume_id: format!("{:04X}-{:04X}", id >> 16, id & 0xFFFF),
-            oem_name: String::from_utf8_lossy(&s[3..11]).trim_end().to_string(),
-            bytes_per_sector,
-            cluster_size: stats.cluster_size(),
-            total_clusters: stats.total_clusters(),
-            free_clusters: stats.free_clusters(),
-            total_bytes: u64::from(stats.total_clusters()) * cluster,
-            free_bytes: u64::from(stats.free_clusters()) * cluster,
-            volume_offset: self.offset,
-            volume_size: self.size,
-            layout: self.layout.clone(),
-            partition: self.partition.clone(),
-            floppy_format: FloppyFormat::matching(
-                total_sectors,
-                le16(s, 24),
-                le16(s, 26),
-                s[21],
-                u32::from(s[13]) * u32::from(bytes_per_sector),
-                le16(s, 17),
-            )
-            .map(|f| f.name),
-            writable: self.writable,
-        })
+        let container = self.image.container();
+        let (offset, size) = (self.image.offset, self.image.len);
+        match &self.fs {
+            Fs::Iso(iso) => {
+                let i = iso.info();
+                let total = u64::from(i.volume_blocks) * u64::from(i.block_size);
+                Ok(VolumeInfo {
+                    fs_type: if i.joliet {
+                        "ISO 9660 + Joliet"
+                    } else if i.rock_ridge {
+                        "ISO 9660 + Rock Ridge"
+                    } else {
+                        "ISO 9660"
+                    }
+                    .into(),
+                    label: i.volume_id.clone(),
+                    volume_id: String::new(),
+                    oem_name: i.system_id.clone(),
+                    bytes_per_sector: i.block_size as u16,
+                    cluster_size: i.block_size,
+                    total_clusters: i.volume_blocks,
+                    free_clusters: 0,
+                    total_bytes: total,
+                    free_bytes: 0,
+                    volume_offset: offset,
+                    volume_size: size,
+                    layout: self.image.layout.clone(),
+                    partition: None,
+                    floppy_format: None,
+                    writable: false,
+                    fs_writable: false,
+                    container,
+                    iso: Some(i.clone()),
+                })
+            }
+            Fs::Fat(fs) => {
+                let stats = fs.stats()?;
+                let s = &self.boot;
+                let bytes_per_sector = le16(s, 11);
+                let total16 = le16(s, 19);
+                let total_sectors = if total16 != 0 {
+                    u32::from(total16)
+                } else {
+                    le32(s, 32)
+                };
+                let id = fs.volume_id();
+                let cluster = u64::from(stats.cluster_size());
+                Ok(VolumeInfo {
+                    fs_type: match fs.fat_type() {
+                        FatType::Fat12 => "FAT12",
+                        FatType::Fat16 => "FAT16",
+                        FatType::Fat32 => "FAT32",
+                    }
+                    .into(),
+                    label: self.label()?,
+                    volume_id: format!("{:04X}-{:04X}", id >> 16, id & 0xFFFF),
+                    oem_name: String::from_utf8_lossy(&s[3..11]).trim_end().to_string(),
+                    bytes_per_sector,
+                    cluster_size: stats.cluster_size(),
+                    total_clusters: stats.total_clusters(),
+                    free_clusters: stats.free_clusters(),
+                    total_bytes: u64::from(stats.total_clusters()) * cluster,
+                    free_bytes: u64::from(stats.free_clusters()) * cluster,
+                    volume_offset: offset,
+                    volume_size: size,
+                    layout: self.image.layout.clone(),
+                    partition: self.image.partition.clone(),
+                    floppy_format: FloppyFormat::matching(
+                        total_sectors,
+                        le16(s, 24),
+                        le16(s, 26),
+                        s[21],
+                        u32::from(s[13]) * u32::from(bytes_per_sector),
+                        le16(s, 17),
+                    )
+                    .map(|f| f.name),
+                    writable: self.image.writable,
+                    fs_writable: true,
+                    container,
+                    iso: None,
+                })
+            }
+        }
     }
 
     /// Volume label: the root-directory label entry if present, else the boot sector's.
     pub fn label(&self) -> Result<String> {
-        let label = match self.fs.read_volume_label_from_root_dir()? {
-            Some(l) => l,
-            None => self.fs.volume_label(),
-        };
-        let label = label.trim_end().to_string();
-        Ok(if label == "NO NAME" {
-            String::new()
-        } else {
-            label
-        })
+        match &self.fs {
+            Fs::Iso(iso) => Ok(iso.info().volume_id.clone()),
+            Fs::Fat(fs) => {
+                let label = match fs.read_volume_label_from_root_dir()? {
+                    Some(l) => l,
+                    None => fs.volume_label(),
+                };
+                let label = label.trim_end().to_string();
+                Ok(if label == "NO NAME" {
+                    String::new()
+                } else {
+                    label
+                })
+            }
+        }
     }
 
     /// Entries of one folder (not recursive), folders first, then by name.
     pub fn list(&self, dir: &str) -> Result<Vec<Entry>> {
+        let fs = match &self.fs {
+            Fs::Iso(iso) => return iso.list(dir),
+            Fs::Fat(fs) => fs,
+        };
         let dir = norm(dir)?;
         let mut out = Vec::new();
-        for e in self.dir(&dir)?.iter() {
+        for e in self.dir(fs, &dir)?.iter() {
             let e = e?;
             if is_dot(&e) {
                 continue;
@@ -335,160 +451,67 @@ impl Volume {
 
     /// Look up one entry. The root has no entry and returns `None`.
     pub fn stat(&self, path: &str) -> Result<Option<Entry>> {
+        let fs = match &self.fs {
+            Fs::Iso(iso) => return iso.stat(path),
+            Fs::Fat(fs) => fs,
+        };
         let path = norm(path)?;
         let (parent, _) = split_parent(&path);
-        Ok(self.find(&path)?.map(|e| to_entry(&e, parent)))
+        Ok(find(fs, &path)?.map(|e| to_entry(&e, parent)))
     }
 
     /// Copy a file or folder out of the image into `dest` (a host folder, created if missing).
     /// `src` of `""` extracts the whole root. Folders keep their structure.
     pub fn extract(&self, src: &str, dest: &Path, overwrite: bool) -> Result<Stats> {
+        let fs = match &self.fs {
+            Fs::Iso(iso) => return iso.extract(src, dest, overwrite),
+            Fs::Fat(fs) => fs,
+        };
         let src = norm(src)?;
         fs::create_dir_all(dest)?;
         let mut stats = Stats::default();
         if src.is_empty() {
-            self.extract_dir(self.fs.root_dir(), dest, overwrite, &mut stats)?;
+            extract_dir(fs.root_dir(), dest, overwrite, &mut stats)?;
         } else {
-            let e = self
-                .find(&src)?
-                .ok_or_else(|| Error::NotFound(display(&src)))?;
-            self.extract_entry(&e, dest, overwrite, &mut stats)?;
+            let e = find(fs, &src)?.ok_or_else(|| Error::NotFound(display(&src)))?;
+            extract_entry(&e, dest, overwrite, &mut stats)?;
         }
         Ok(stats)
     }
 
-    fn extract_entry(
-        &self,
-        e: &FatEntry<'_>,
-        dest: &Path,
-        overwrite: bool,
-        stats: &mut Stats,
-    ) -> Result<()> {
-        let target = dest.join(host_safe_name(&e.file_name()));
-        if e.is_dir() {
-            fs::create_dir_all(&target)?;
-            stats.dirs += 1;
-            self.extract_dir(e.to_dir(), &target, overwrite, stats)
-        } else {
-            if !overwrite && target.exists() {
-                return Err(Error::Exists(target.display().to_string()));
-            }
-            let mut src = e.to_file();
-            let mut out = File::create(&target)?;
-            stats.bytes += io::copy(&mut src, &mut out)?;
-            stats.files += 1;
-            if let Some(t) = to_system_time(e.modified()) {
-                let _ = out.set_modified(t);
-            }
-            Ok(())
+    /// El Torito boot image of an ISO (1-based boot catalog entry).
+    pub fn boot_image(&self, index: usize) -> Result<Vec<u8>> {
+        match &self.fs {
+            Fs::Iso(iso) => iso.boot_image(index),
+            Fs::Fat(_) => Err(Error::Invalid(
+                "boot images are part of ISO (El Torito) images; use the boot sector for FAT"
+                    .into(),
+            )),
         }
-    }
-
-    fn extract_dir(
-        &self,
-        dir: FatDir<'_>,
-        dest: &Path,
-        overwrite: bool,
-        stats: &mut Stats,
-    ) -> Result<()> {
-        for e in dir.iter() {
-            let e = e?;
-            if !is_dot(&e) {
-                self.extract_entry(&e, dest, overwrite, stats)?;
-            }
-        }
-        Ok(())
     }
 
     /// Copy a host file or folder into folder `dest_dir` of the image (created if missing).
     pub fn inject(&self, host: &Path, dest_dir: &str, overwrite: bool) -> Result<Stats> {
-        self.require_writable()?;
+        let fs = self.fat_writable()?;
         let dest_dir = norm(dest_dir)?;
         let mut stats = Stats::default();
-        self.inject_into(host, &dest_dir, overwrite, &mut stats)?;
+        inject_into(fs, host, &dest_dir, overwrite, &mut stats)?;
         Ok(stats)
-    }
-
-    fn inject_into(
-        &self,
-        host: &Path,
-        dest_dir: &str,
-        overwrite: bool,
-        stats: &mut Stats,
-    ) -> Result<()> {
-        let name = host
-            .file_name()
-            .ok_or_else(|| Error::InvalidPath(host.display().to_string()))?
-            .to_string_lossy()
-            .into_owned();
-        let meta = fs::metadata(host)?;
-        if meta.is_dir() {
-            let img_path = join(dest_dir, &name);
-            self.ensure_dir(&img_path)?;
-            stats.dirs += 1;
-            let mut children: Vec<_> = fs::read_dir(host)?.collect::<io::Result<_>>()?;
-            children.sort_by_key(|c| c.file_name());
-            for c in children {
-                self.inject_into(&c.path(), &img_path, overwrite, stats)?;
-            }
-            return Ok(());
-        }
-
-        let dir = self.ensure_dir(dest_dir)?;
-        let img_path = join(dest_dir, &name);
-        if let Some(existing) = find_in(&dir, &name)? {
-            if existing.is_dir() {
-                return Err(Error::Exists(format!("{} (a folder)", display(&img_path))));
-            }
-            if !overwrite {
-                return Err(Error::Exists(display(&img_path)));
-            }
-        }
-        let mut src = File::open(host)?;
-        let mut dst = dir
-            .create_file(&name)
-            .map_err(|e| Error::at(&img_path, e))?;
-        let copied = dst.truncate().and_then(|_| io::copy(&mut src, &mut dst));
-        match copied {
-            Ok(n) => {
-                // Keep the host file's modified time, as WinImage does. fatfs 0.3 deprecates this
-                // in favour of a TimeProvider, but it is correct when set after the last write.
-                if let Some(dt) = meta.modified().ok().and_then(to_fat_time) {
-                    #[allow(deprecated)]
-                    dst.set_modified(dt);
-                }
-                dst.flush_entry()?;
-                stats.files += 1;
-                stats.bytes += n;
-                Ok(())
-            }
-            Err(e) => {
-                drop(dst);
-                let _ = dir.remove(&name);
-                if e.kind() == io::ErrorKind::Other && e.to_string().contains("No space") {
-                    return Err(Error::Invalid(format!(
-                        "not enough free space in the image for {}",
-                        display(&img_path)
-                    )));
-                }
-                Err(Error::Io(e))
-            }
-        }
     }
 
     /// Create a folder, including missing parents. Succeeds if it already exists.
     pub fn mkdir(&self, path: &str) -> Result<()> {
-        self.require_writable()?;
+        let fs = self.fat_writable()?;
         let path = norm(path)?;
         if path.is_empty() {
             return Err(Error::InvalidPath("/".into()));
         }
-        self.ensure_dir(&path).map(|_| ())
+        ensure_dir(fs, &path).map(|_| ())
     }
 
     /// Delete a file, or a folder (`recursive` needed when it is not empty).
     pub fn remove(&self, path: &str, recursive: bool) -> Result<Stats> {
-        self.require_writable()?;
+        self.fat_writable()?;
         let path = norm(path)?;
         if path.is_empty() {
             return Err(Error::InvalidPath("cannot remove the root folder".into()));
@@ -499,9 +522,8 @@ impl Volume {
     }
 
     fn remove_path(&self, path: &str, recursive: bool, stats: &mut Stats) -> Result<()> {
-        let e = self
-            .find(path)?
-            .ok_or_else(|| Error::NotFound(display(path)))?;
+        let fs = self.fat_writable()?;
+        let e = find(fs, path)?.ok_or_else(|| Error::NotFound(display(path)))?;
         let (parent, _) = split_parent(path);
         let name = e.file_name();
         if e.is_dir() {
@@ -520,22 +542,20 @@ impl Volume {
             stats.files += 1;
             stats.bytes += e.len();
         }
-        self.dir(parent)?
+        self.dir(fs, parent)?
             .remove(&name)
             .map_err(|err| Error::at(path, err))
     }
 
     /// Rename or move. If `to` is an existing folder, `from` is moved into it.
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
-        self.require_writable()?;
+        let fs = self.fat_writable()?;
         let from = norm(from)?;
         let to = norm(to)?;
-        let src = self
-            .find(&from)?
-            .ok_or_else(|| Error::NotFound(display(&from)))?;
+        let src = find(fs, &from)?.ok_or_else(|| Error::NotFound(display(&from)))?;
         let (src_parent, _) = split_parent(&from);
         let src_name = src.file_name();
-        let (dst_dir, dst_name) = match self.find(&to)? {
+        let (dst_dir, dst_name) = match find(fs, &to)? {
             Some(t) if t.is_dir() => (to.clone(), src_name.clone()),
             Some(_) => return Err(Error::Exists(display(&to))),
             None if to.is_empty() => (String::new(), src_name.clone()),
@@ -544,89 +564,306 @@ impl Volume {
                 (p.to_string(), n.to_string())
             }
         };
-        let target_dir = self.dir(&dst_dir)?;
-        self.dir(src_parent)?
+        let target_dir = self.dir(fs, &dst_dir)?;
+        self.dir(fs, src_parent)?
             .rename(&src_name, &target_dir, &dst_name)
             .map_err(|e| Error::at(&from, e))
     }
 
-    /// Flush and unmount, reporting any error (dropping a `Volume` also unmounts, silently).
+    /// Flush, unmount and persist the container, reporting any error (dropping a `Volume`
+    /// does the same silently).
     pub fn close(self) -> Result<()> {
-        self.fs.unmount()?;
+        let Volume {
+            fs, _sync, image, ..
+        } = self;
+        if let Fs::Fat(fs) = fs {
+            fs.unmount()?;
+        }
+        image.flush()?;
         Ok(())
+    }
+
+    /// Rebuild a bare FAT volume (floppy or volume image) in another format or size — WinImage's
+    /// "Change format". Files, folders, attributes, timestamps, label, serial number and boot
+    /// code are kept. The image keeps its container (IMZ stays IMZ, VHDX stays VHDX…).
+    pub fn change_format(path: &Path, opts: &OpenOptions, spec: NewImage) -> Result<Stats> {
+        let src = Volume::open(
+            path,
+            &OpenOptions {
+                writable: false,
+                ..opts.clone()
+            },
+        )?;
+        let Fs::Fat(sfs) = &src.fs else {
+            return Err(Error::Unsupported(
+                "changing the format of ISO images".into(),
+            ));
+        };
+        if !matches!(src.image.layout, Layout::BareVolume) {
+            return Err(Error::Unsupported(
+                "changing the format of partitioned disks (bare volumes and floppies only)".into(),
+            ));
+        }
+        let like = src.image.container();
+        let label = src.label()?;
+        let size = spec.size_bytes();
+        let dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let tmp = tempfile::Builder::new().prefix(".s0-").tempdir_in(dir)?;
+        let scratch = tmp.path().join("scratch.img");
+        let new_disk = container::share(Box::new(container::raw::RawDisk::create(&scratch, size)?));
+
+        let label_bytes = if label.is_empty() {
+            None
+        } else {
+            Some(encode_label(&label)?)
+        };
+        format_fat(
+            Window::new(new_disk.clone(), 0, size, true),
+            &spec,
+            label_bytes,
+            0,
+            Some(sfs.volume_id()),
+        )?;
+        let mut stats = Stats::default();
+        {
+            let dfs = FileSystem::new(
+                Window::new(new_disk.clone(), 0, size, true),
+                FsOptions::new().update_accessed_date(false),
+            )
+            .map_err(|e| Error::NotFat(e.to_string()))?;
+            copy_dir(sfs.root_dir(), dfs.root_dir(), "", &mut stats).map_err(|e| match e {
+                Error::Io(ref io) if io.to_string().contains("No space") => {
+                    Error::Invalid("the files do not fit in the new format".into())
+                }
+                other => other,
+            })?;
+            dfs.unmount()?;
+        }
+        // Raw pass: attributes and timestamps fatfs cannot set, then boot code and label.
+        let mut sw = src.image.window();
+        let mut dw = Window::new(new_disk.clone(), 0, size, true);
+        fatraw::copy_metadata(&mut sw, &mut dw)?;
+        let sboot = fatraw::read_boot(&mut sw)?;
+        let (sb, db) = (
+            fatraw::Bpb::parse(&sboot)?,
+            fatraw::Bpb::parse(&fatraw::read_boot(&mut dw)?)?,
+        );
+        if sb.fat_bits == db.fat_bits && fatraw::boot_info(&sboot)?.has_boot_code {
+            fatraw::import_boot(&mut dw, &sboot)?;
+        }
+        fatraw::set_label(&mut dw, label_bytes)?;
+        drop(sw);
+        drop(src);
+
+        // Write the new volume into a fresh container of the same kind, then swap it in.
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
+        let out = tmp.path().join(file_name);
+        {
+            let mut to = container::create_like(&out, &like, size)?;
+            let mut from = lock(&new_disk)?;
+            container::copy_sparse(from.as_mut(), to.as_mut(), size)?;
+        }
+        drop(dw);
+        drop(new_disk);
+        container::replace_file(&out, path)?;
+        Ok(stats)
     }
 
     // --- helpers -------------------------------------------------------------------------
 
-    fn require_writable(&self) -> Result<()> {
-        if self.writable {
-            Ok(())
-        } else {
-            Err(Error::Invalid("the image is open read-only".into()))
+    fn fat_writable(&self) -> Result<&FatFs> {
+        match &self.fs {
+            Fs::Iso(_) => Err(Error::Unsupported(
+                "modifying ISO 9660 images (they are read-only)".into(),
+            )),
+            Fs::Fat(fs) if self.image.writable => Ok(fs),
+            Fs::Fat(_) => Err(Error::Invalid("the image is open read-only".into())),
         }
     }
 
-    fn dir(&self, path: &str) -> Result<FatDir<'_>> {
-        let root = self.fs.root_dir();
+    fn dir<'a>(&self, fs: &'a FatFs, path: &str) -> Result<FatDir<'a>> {
         if path.is_empty() {
-            return Ok(root);
+            return Ok(fs.root_dir());
         }
-        match self.find(path)? {
+        match find(fs, path)? {
             Some(e) if e.is_dir() => Ok(e.to_dir()),
             Some(_) => Err(Error::Invalid(format!("not a folder: {}", display(path)))),
             None => Err(Error::NotFound(display(path))),
         }
     }
+}
 
-    fn find(&self, path: &str) -> Result<Option<FatEntry<'_>>> {
-        if path.is_empty() {
+fn find<'a>(fs: &'a FatFs, path: &str) -> Result<Option<FatEntry<'a>>> {
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let mut dir = fs.root_dir();
+    let mut parts = path.split('/').peekable();
+    while let Some(name) = parts.next() {
+        let Some(e) = find_in(&dir, name)? else {
+            return Ok(None);
+        };
+        if parts.peek().is_none() {
+            return Ok(Some(e));
+        }
+        if !e.is_dir() {
             return Ok(None);
         }
-        let mut dir = self.fs.root_dir();
-        let mut parts = path.split('/').peekable();
-        while let Some(name) = parts.next() {
-            let Some(e) = find_in(&dir, name)? else {
-                return Ok(None);
-            };
-            if parts.peek().is_none() {
-                return Ok(Some(e));
-            }
-            if !e.is_dir() {
-                return Ok(None);
-            }
-            dir = e.to_dir();
-        }
-        Ok(None)
+        dir = e.to_dir();
     }
+    Ok(None)
+}
 
-    fn ensure_dir(&self, path: &str) -> Result<FatDir<'_>> {
-        let mut dir = self.fs.root_dir();
-        let mut so_far = String::new();
-        for name in path.split('/').filter(|s| !s.is_empty()) {
-            so_far = join(&so_far, name);
-            dir = match find_in(&dir, name)? {
-                Some(e) if e.is_dir() => e.to_dir(),
-                Some(_) => {
-                    return Err(Error::Exists(format!(
-                        "{} (a file is in the way)",
-                        display(&so_far)
-                    )));
-                }
-                None => dir.create_dir(name).map_err(|e| Error::at(&so_far, e))?,
-            };
+fn ensure_dir<'a>(fs: &'a FatFs, path: &str) -> Result<FatDir<'a>> {
+    let mut dir = fs.root_dir();
+    let mut so_far = String::new();
+    for name in path.split('/').filter(|s| !s.is_empty()) {
+        so_far = join(&so_far, name);
+        dir = match find_in(&dir, name)? {
+            Some(e) if e.is_dir() => e.to_dir(),
+            Some(_) => {
+                return Err(Error::Exists(format!(
+                    "{} (a file is in the way)",
+                    display(&so_far)
+                )));
+            }
+            None => dir.create_dir(name).map_err(|e| Error::at(&so_far, e))?,
+        };
+    }
+    Ok(dir)
+}
+
+fn extract_entry(e: &FatEntry<'_>, dest: &Path, overwrite: bool, stats: &mut Stats) -> Result<()> {
+    let target = dest.join(host_safe_name(&e.file_name()));
+    if e.is_dir() {
+        fs::create_dir_all(&target)?;
+        stats.dirs += 1;
+        extract_dir(e.to_dir(), &target, overwrite, stats)
+    } else {
+        if !overwrite && target.exists() {
+            return Err(Error::Exists(target.display().to_string()));
         }
-        Ok(dir)
+        let mut src = e.to_file();
+        let mut out = File::create(&target)?;
+        stats.bytes += io::copy(&mut src, &mut out)?;
+        stats.files += 1;
+        if let Some(t) = to_system_time(e.modified()) {
+            let _ = out.set_modified(t);
+        }
+        Ok(())
     }
 }
 
-trait FlushEntry {
-    fn flush_entry(&mut self) -> io::Result<()>;
-}
-impl FlushEntry for fatfs::File<'_, Window> {
-    /// Write the directory entry (size, timestamps) now, so errors surface here.
-    fn flush_entry(&mut self) -> io::Result<()> {
-        io::Write::flush(self)
+fn extract_dir(dir: FatDir<'_>, dest: &Path, overwrite: bool, stats: &mut Stats) -> Result<()> {
+    for e in dir.iter() {
+        let e = e?;
+        if !is_dot(&e) {
+            extract_entry(&e, dest, overwrite, stats)?;
+        }
     }
+    Ok(())
+}
+
+fn no_space(e: &io::Error) -> bool {
+    e.to_string().contains("No space")
+}
+
+fn inject_into(
+    fs: &FatFs,
+    host: &Path,
+    dest_dir: &str,
+    overwrite: bool,
+    stats: &mut Stats,
+) -> Result<()> {
+    let name = host
+        .file_name()
+        .ok_or_else(|| Error::InvalidPath(host.display().to_string()))?
+        .to_string_lossy()
+        .into_owned();
+    let meta = fs::metadata(host)?;
+    if meta.is_dir() {
+        let img_path = join(dest_dir, &name);
+        ensure_dir(fs, &img_path)?;
+        stats.dirs += 1;
+        let mut children: Vec<_> = fs::read_dir(host)?.collect::<io::Result<_>>()?;
+        children.sort_by_key(|c| c.file_name());
+        for c in children {
+            inject_into(fs, &c.path(), &img_path, overwrite, stats)?;
+        }
+        return Ok(());
+    }
+
+    let dir = ensure_dir(fs, dest_dir)?;
+    let img_path = join(dest_dir, &name);
+    if let Some(existing) = find_in(&dir, &name)? {
+        if existing.is_dir() {
+            return Err(Error::Exists(format!("{} (a folder)", display(&img_path))));
+        }
+        if !overwrite {
+            return Err(Error::Exists(display(&img_path)));
+        }
+    }
+    let mut src = File::open(host)?;
+    let mut dst = dir
+        .create_file(&name)
+        .map_err(|e| Error::at(&img_path, e))?;
+    let copied = dst.truncate().and_then(|_| io::copy(&mut src, &mut dst));
+    match copied {
+        Ok(n) => {
+            // Keep the host file's modified time, as WinImage does. fatfs 0.3 deprecates this
+            // in favour of a TimeProvider, but it is correct when set after the last write.
+            if let Some(dt) = meta.modified().ok().and_then(to_fat_time) {
+                #[allow(deprecated)]
+                dst.set_modified(dt);
+            }
+            io::Write::flush(&mut dst)?;
+            stats.files += 1;
+            stats.bytes += n;
+            Ok(())
+        }
+        Err(e) => {
+            drop(dst);
+            let _ = dir.remove(&name);
+            if no_space(&e) {
+                return Err(Error::Invalid(format!(
+                    "not enough free space in the image for {}",
+                    display(&img_path)
+                )));
+            }
+            Err(Error::Io(e))
+        }
+    }
+}
+
+/// Copy a FAT folder tree between two mounted volumes (for change-format).
+fn copy_dir(src: FatDir<'_>, dst: FatDir<'_>, path: &str, stats: &mut Stats) -> Result<()> {
+    for e in src.iter() {
+        let e = e?;
+        if is_dot(&e) {
+            continue;
+        }
+        let name = e.file_name();
+        let p = join(path, &name);
+        if e.is_dir() {
+            let d = dst.create_dir(&name).map_err(|err| Error::at(&p, err))?;
+            stats.dirs += 1;
+            copy_dir(e.to_dir(), d, &p, stats)?;
+        } else {
+            let mut out = dst.create_file(&name).map_err(|err| Error::at(&p, err))?;
+            out.truncate()?;
+            stats.bytes += io::copy(&mut e.to_file(), &mut out)?;
+            #[allow(deprecated)]
+            out.set_modified(e.modified());
+            io::Write::flush(&mut out)?;
+            stats.files += 1;
+        }
+    }
+    Ok(())
 }
 
 fn find_in<'a>(dir: &FatDir<'a>, name: &str) -> Result<Option<FatEntry<'a>>> {
@@ -668,7 +905,7 @@ fn to_entry(e: &FatEntry<'_>, parent: &str) -> Entry {
 }
 
 /// Normalise an in-image path: `\` → `/`, drop empty and `.` parts, refuse `..`.
-fn norm(p: &str) -> Result<String> {
+pub(crate) fn norm(p: &str) -> Result<String> {
     let mut parts = Vec::new();
     for c in p.split(['/', '\\']) {
         match c {
@@ -680,14 +917,14 @@ fn norm(p: &str) -> Result<String> {
     Ok(parts.join("/"))
 }
 
-fn split_parent(p: &str) -> (&str, &str) {
+pub(crate) fn split_parent(p: &str) -> (&str, &str) {
     match p.rfind('/') {
         Some(i) => (&p[..i], &p[i + 1..]),
         None => ("", p),
     }
 }
 
-fn join(dir: &str, name: &str) -> String {
+pub(crate) fn join(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         name.to_string()
     } else {
@@ -696,7 +933,7 @@ fn join(dir: &str, name: &str) -> String {
 }
 
 /// A name read from an image must not escape the destination folder on the host.
-fn host_safe_name(name: &str) -> String {
+pub(crate) fn host_safe_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
@@ -713,7 +950,7 @@ fn host_safe_name(name: &str) -> String {
     }
 }
 
-fn encode_label(label: &str) -> Result<[u8; 11]> {
+pub(crate) fn encode_label(label: &str) -> Result<[u8; 11]> {
     let up = label.trim().to_ascii_uppercase();
     if up.len() > 11 {
         return Err(Error::Invalid(

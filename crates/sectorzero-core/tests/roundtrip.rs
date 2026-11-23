@@ -3,25 +3,34 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use sectorzero_core::{
-    Error, FLOPPY_FORMATS, FloppyFormat, Layout, NewImage, OpenOptions, Volume, probe,
+    CreateOptions, Error, FLOPPY_FORMATS, FloppyFormat, Layout, NewImage, OpenOptions, Volume,
+    probe,
 };
 
-const RW: OpenOptions = OpenOptions {
+const RW: &OpenOptions = &OpenOptions {
     writable: true,
     partition: None,
+    member: None,
 };
-const RO: OpenOptions = OpenOptions {
+const RO: &OpenOptions = &OpenOptions {
     writable: false,
     partition: None,
+    member: None,
 };
+
+fn labelled(label: &str) -> CreateOptions {
+    CreateOptions {
+        label: Some(label.into()),
+        ..Default::default()
+    }
+}
 
 fn floppy(dir: &Path, id: &str) -> std::path::PathBuf {
     let path = dir.join(format!("{id}.ima"));
     Volume::create(
         &path,
         NewImage::Floppy(FloppyFormat::find(id).unwrap()),
-        Some("TEST"),
-        false,
+        &labelled("TEST"),
     )
     .unwrap();
     path
@@ -32,7 +41,7 @@ fn every_floppy_format_creates_and_reopens() {
     let tmp = tempfile::tempdir().unwrap();
     for f in FLOPPY_FORMATS {
         let path = tmp.path().join(format!("{}.ima", f.id));
-        Volume::create(&path, NewImage::Floppy(f), Some("FMT"), false)
+        Volume::create(&path, NewImage::Floppy(f), &labelled("FMT"))
             .unwrap_or_else(|e| panic!("{}: {e}", f.id));
         assert_eq!(
             fs::metadata(&path).unwrap().len(),
@@ -42,7 +51,7 @@ fn every_floppy_format_creates_and_reopens() {
         );
         let vol = Volume::open(&path, RO).unwrap();
         let info = vol.info().unwrap();
-        assert_eq!(info.fat_type, "FAT12", "{}", f.id);
+        assert_eq!(info.fs_type, "FAT12", "{}", f.id);
         assert_eq!(info.cluster_size, f.bytes_per_cluster, "{}", f.id);
         assert_eq!(info.floppy_format, Some(f.name), "{}", f.id);
         assert_eq!(info.label, "FMT", "{}", f.id);
@@ -160,8 +169,7 @@ fn opens_fat_partition_inside_mbr_disk() {
         NewImage::Volume {
             size_bytes: 32 << 20,
         },
-        Some("PART1"),
-        false,
+        &labelled("PART1"),
     )
     .unwrap();
     let start_lba = 2048u32;
@@ -184,8 +192,11 @@ fn opens_fat_partition_inside_mbr_disk() {
         .unwrap();
     drop(d);
 
-    match probe(&disk).unwrap() {
-        Layout::Mbr(p) => assert_eq!((p.len(), p[0].type_id, p[0].bootable), (1, 0x06, true)),
+    match probe(&disk).unwrap().1 {
+        Layout::Mbr(p) => assert_eq!(
+            (p.len(), p[0].type_id.as_str(), p[0].bootable),
+            (1, "0x06", true)
+        ),
         other => panic!("{other:?}"),
     }
 
@@ -194,7 +205,11 @@ fn opens_fat_partition_inside_mbr_disk() {
     let vol = Volume::open(&disk, RW).unwrap();
     let info = vol.info().unwrap();
     assert_eq!(
-        (info.fat_type, info.label.as_str(), info.volume_offset),
+        (
+            info.fs_type.as_str(),
+            info.label.as_str(),
+            info.volume_offset
+        ),
         ("FAT16", "PART1", 2048 * 512)
     );
     vol.inject(&f, "/", false).unwrap();
@@ -204,9 +219,9 @@ fn opens_fat_partition_inside_mbr_disk() {
     assert_eq!(&fs::read(&disk).unwrap()[..512], &mbr);
     let vol = Volume::open(
         &disk,
-        OpenOptions {
-            writable: false,
+        &OpenOptions {
             partition: Some(1),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -216,9 +231,9 @@ fn opens_fat_partition_inside_mbr_disk() {
     assert!(
         Volume::open(
             &disk,
-            OpenOptions {
-                writable: false,
-                partition: Some(2)
+            &OpenOptions {
+                partition: Some(2),
+                ..Default::default()
             }
         )
         .is_err()
@@ -231,5 +246,44 @@ fn rejects_non_images() {
     let junk = tmp.path().join("junk.ima");
     fs::write(&junk, vec![0u8; 4096]).unwrap();
     assert!(matches!(Volume::open(&junk, RO), Err(Error::NotFat(_))));
-    assert!(matches!(probe(&junk).unwrap(), Layout::Unknown));
+    assert!(matches!(probe(&junk).unwrap().1, Layout::Unknown));
+}
+
+/// WinImage (and some DOS tools) reject a folder whose first two slots are not plain `.`/`..`
+/// entries; upstream fatfs 0.3.6 wrote long-name entries before them (patched in third_party/fatfs).
+#[test]
+fn new_folders_start_with_plain_dot_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let img = floppy(tmp.path(), "1440");
+    {
+        let vol = Volume::open(&img, RW).unwrap();
+        vol.mkdir("A Long Folder Name").unwrap();
+        vol.close().unwrap();
+    }
+    let raw = fs::read(&img).unwrap();
+    let u16_at = |o: usize| u16::from_le_bytes([raw[o], raw[o + 1]]) as usize;
+    let (bps, spc, reserved, fats, root_entries, spf) = (
+        u16_at(11),
+        raw[13] as usize,
+        u16_at(14),
+        raw[16] as usize,
+        u16_at(17),
+        u16_at(22),
+    );
+    let root = (reserved + fats * spf) * bps;
+    let data = root + root_entries * 32;
+    let dir = (0..root_entries)
+        .map(|i| &raw[root + i * 32..root + i * 32 + 32])
+        .find(|e| e[11] == 0x10)
+        .expect("folder entry in the root directory");
+    let cluster = u16::from_le_bytes([dir[26], dir[27]]) as usize;
+    let first = data + (cluster - 2) * spc * bps;
+    assert_eq!(&raw[first..first + 11], b".          ");
+    assert_eq!(
+        raw[first + 11] & 0x10,
+        0x10,
+        "`.` is a directory entry, not an LFN slot"
+    );
+    assert_eq!(&raw[first + 32..first + 43], b"..         ");
+    assert_eq!(raw[first + 43] & 0x10, 0x10);
 }

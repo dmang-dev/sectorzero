@@ -196,3 +196,17 @@ There is **no open-source program that replaces WinImage end to end.** The piece
 3. **TotalImage is the closest project** (MIT, C#, active), but it is read-only today. One choice is to contribute write support to it instead of forking the effort. Starting fresh is still reasonable if you want a WinImage-style workflow, or if you want to go cross-platform.
 4. **Places to improve on WinImage:** VHDX, VDI and QCOW2; exFAT; NTFS write; cross-platform (Linux/macOS); using Windows' native VHD/VHDX/ISO mounting instead of an unsigned 2013 driver; SHA-256 checksums; scriptable CLI and library APIs.
 5. **Compatibility targets:** IMA/IMG, IMZ and WLZ (easy, since they are just ZIP), WIL, VFD/FLP, VHD and VMDK. Encrypted IMZ and PFR are proprietary and would need reverse engineering, so they are low priority.
+
+### 5.1 Implementation status (2026-11-22)
+
+Done, in Rust, from the specifications rather than DiscUtils (so no .NET runtime): IMA/IMG/VFD/FLP,
+IMZ, WLZ, VHD (fixed and dynamic), VHDX, VMDK (sparse, flat, descriptor), MBR and GPT, FAT12/16/32
+read/write, ISO 9660 + Joliet + Rock Ridge (read), ISO building with El Torito (BIOS and UEFI),
+volume label, boot sector edit/import/export, MBR import/export, defragment, change format (resize),
+and conversion between containers. Images were cross-checked against the WinImage SDK and Windows'
+ISO mounting.
+
+Still to do, roughly in order: physical drives (read an image from a USB stick or card, write one
+back, with verification), physical floppy drives, batch mode, exFAT, VDI and QCOW2, resizing
+partitioned disks, self-extracting images, encrypted IMZ (proprietary), and the macOS, Linux and
+Android builds.

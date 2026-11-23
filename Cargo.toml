@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/sectorzero-core", "crates/sectorzero-cli", "app/src-tauri"]
+exclude = ["third_party/fatfs"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,8 +17,18 @@ fatfs = "0.3.6"
 # fatfs's own timestamp type converts from chrono's local time.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 thiserror = "2"
+# IMZ / WLZ are ZIP files.
+zip = { version = "9.8", default-features = false, features = ["deflate"] }
+# CRC-32 for GPT headers.
+crc32fast = "1.5"
+# Random GUIDs for GPT, VHD, VHDX.
+uuid = { version = "1.29", features = ["v4"] }
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+
+# fatfs 0.3.6 with one fix (plain "." and ".." entries); see third_party/fatfs/SECTORZERO-PATCH.md.
+[patch.crates-io]
+fatfs = { path = "third_party/fatfs" }
