@@ -12,7 +12,7 @@ See [RESEARCH.md](RESEARCH.md) for WinImage's full feature set and how this proj
 
 ## Status
 
-Windows first. The other platforms come later.
+Windows first. Linux builds come from CI; macOS and other platforms come later.
 
 | Area | Works now |
 |---|---|
@@ -40,14 +40,21 @@ app/                     Tauri 2 desktop app (Rust shell in src-tauri/, plain HT
 third_party/fatfs        vendored fatfs 0.3.6 with one fix (see SECTORZERO-PATCH.md there)
 ```
 
-## Building (Windows)
+## Building
+
+`rust-toolchain.toml` asks for stable Rust with clippy and rustfmt. On Windows, use the MSVC
+toolchain. If your rustup default is the GNU one, set an override for this folder:
+
+```powershell
+rustup override set stable-x86_64-pc-windows-msvc
+```
 
 Requirements:
 
-- Rust via rustup. The repo pins `stable-x86_64-pc-windows-msvc` in `rust-toolchain.toml`.
-- Visual Studio Build Tools with the C++ workload.
-- Node.js (for the Tauri CLI only).
-- WebView2. It ships with Windows 10 and 11.
+- **Windows:** Rust via rustup, Visual Studio Build Tools with the C++ workload, Node.js (for
+  the Tauri CLI only), and WebView2 (it ships with Windows 10 and 11).
+- **Linux (Debian/Ubuntu):** Rust via rustup, Node.js, and the Tauri packages:
+  `sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev file`
 
 ```powershell
 cargo test --workspace
@@ -60,8 +67,23 @@ Desktop app:
 cd app
 npm install
 npm run dev      # run with live reload of ui/
-npm run build    # release build and NSIS installer
+npm run build    # release build and installer (NSIS on Windows)
 ```
+
+On Linux, `npx tauri build --bundles deb,appimage` builds the .deb and AppImage.
+
+## CI and releases
+
+`.github/workflows/ci.yml` runs rustfmt, clippy (warnings are errors) and the tests on Windows,
+Linux and macOS for every push to `main` and every pull request.
+
+`.github/workflows/release.yml` builds the Windows installer, the Linux .deb and AppImage, and
+zipped `s0` CLI binaries, with SHA-256 checksums. To release, bump `version` in `Cargo.toml` and
+`app/src-tauri/tauri.conf.json`, then push a matching tag (`git tag v0.2.0 && git push origin v0.2.0`).
+The files land on a draft GitHub release to review and publish. Running the workflow by hand
+builds the same files as workflow artifacts without making a release.
+
+The binaries are not code-signed yet, so Windows SmartScreen warns about an unknown publisher.
 
 ## CLI
 

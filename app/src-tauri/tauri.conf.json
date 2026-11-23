@@ -23,7 +23,21 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "SectorZero contributors",
+    "copyright": "Copyright (c) SectorZero contributors. MIT License.",
+    "license": "MIT",
+    "category": "Utility",
+    "shortDescription": "Create, browse and edit floppy, hard disk and CD images",
+    "longDescription": "SectorZero is an open-source disk image utility. It creates floppy, hard disk and CD images, browses them, and injects or extracts files without mounting anything. It reads and writes IMA, IMZ, WLZ, VHD, VHDX, VMDK and ISO images.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }
