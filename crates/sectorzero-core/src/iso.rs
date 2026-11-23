@@ -328,6 +328,8 @@ impl IsoFs {
             is_dir: r.is_dir,
             size: if r.is_dir { 0 } else { r.size },
             modified: r.date.clone(),
+            created: String::new(),
+            accessed: String::new(),
             attributes: Attributes {
                 read_only: true,
                 hidden: r.hidden,
@@ -434,6 +436,138 @@ impl IsoFs {
             .read_at(u64::from(e.lba) * SECTOR, &mut data)?;
         Ok(data)
     }
+}
+
+impl IsoFs {
+    /// Write a file's contents to `out` (for checksums and "open with").
+    pub(crate) fn copy_out(&self, path: &str, out: &mut dyn Write) -> Result<u64> {
+        let path = norm(path)?;
+        let r = self
+            .find(&path)?
+            .ok_or_else(|| Error::NotFound(display(&path)))?;
+        if r.is_dir {
+            return Err(Error::Invalid(format!("{} is a folder", display(&path))));
+        }
+        let mut w = self.w.borrow_mut();
+        let mut buf = vec![0u8; 1024 * 1024];
+        for &(lba, len) in &r.extents {
+            let mut done = 0u64;
+            while done < u64::from(len) {
+                let n = (u64::from(len) - done).min(buf.len() as u64) as usize;
+                w.read_at(u64::from(lba) * SECTOR + done, &mut buf[..n])?;
+                out.write_all(&buf[..n])?;
+                done += n as u64;
+            }
+        }
+        Ok(r.size)
+    }
+}
+
+/// Byte positions of every directory record (in the primary and Joliet trees) whose extent
+/// starts at `lba`.
+fn records_for_extent(w: &mut Window, lba: u32) -> Result<Vec<u64>> {
+    let mut roots = Vec::new();
+    for i in 16..16 + 64u64 {
+        let mut d = vec![0u8; SECTOR as usize];
+        w.read_at(i * SECTOR, &mut d)?;
+        if &d[1..6] != b"CD001" || d[0] == 255 {
+            break;
+        }
+        if matches!(d[0], 1 | 2) {
+            roots.push((le32(&d, 156 + 2), le32(&d, 156 + 10)));
+        }
+    }
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut queue: Vec<(u32, u32)> = roots;
+    while let Some((dir_lba, dir_len)) = queue.pop() {
+        if !seen.insert(dir_lba) {
+            continue;
+        }
+        let mut data = vec![0u8; dir_len.min(16 * 1024 * 1024) as usize];
+        w.read_at(u64::from(dir_lba) * SECTOR, &mut data)?;
+        let mut pos = 0usize;
+        while pos < data.len() {
+            let len = data[pos] as usize;
+            if len == 0 {
+                pos = (pos / SECTOR as usize + 1) * SECTOR as usize;
+                continue;
+            }
+            if len < 34 || pos + len > data.len() {
+                break;
+            }
+            let rec = &data[pos..pos + len];
+            let dot = rec[32] == 1 && (rec[33] == 0 || rec[33] == 1);
+            if !dot {
+                if rec[25] & 2 != 0 {
+                    queue.push((le32(rec, 2), le32(rec, 10)));
+                } else if le32(rec, 2) == lba {
+                    found.push(u64::from(dir_lba) * SECTOR + pos as u64);
+                }
+            }
+            pos += len;
+        }
+    }
+    Ok(found)
+}
+
+/// Overwrite a file's data in place and update its size in every directory record that
+/// points at it.
+pub(crate) fn replace_file(mut w: Window, path: &str, data: &[u8]) -> Result<()> {
+    let fs = IsoFs::open(w.reopen())?;
+    let r = fs
+        .find(path)?
+        .ok_or_else(|| Error::NotFound(display(path)))?;
+    drop(fs);
+    if r.is_dir {
+        return Err(Error::Invalid(format!("{} is a folder", display(path))));
+    }
+    if r.extents.len() != 1 {
+        return Err(Error::Unsupported(
+            "replacing multi-extent (over 4 GB) files".into(),
+        ));
+    }
+    let (lba, old_len) = r.extents[0];
+    let room = round_up(u64::from(old_len), SECTOR);
+    if room == 0 {
+        return Err(Error::Unsupported(
+            "replacing an empty file (it has no sectors to write into)".into(),
+        ));
+    }
+    if data.len() as u64 > room {
+        return Err(Error::Invalid(format!(
+            "the new file is {} bytes; at most {room} fit in place of {}",
+            data.len(),
+            display(path)
+        )));
+    }
+    for i in 16..16 + 64u64 {
+        let mut d = vec![0u8; 8];
+        w.read_at(i * SECTOR, &mut d)?;
+        if matches!(&d[1..6], b"NSR02" | b"NSR03") {
+            return Err(Error::Unsupported(
+                "editing ISO images that also carry a UDF file system".into(),
+            ));
+        }
+    }
+    let positions = records_for_extent(&mut w, lba)?;
+    if positions.is_empty() {
+        return Err(Error::Invalid(
+            "the file's directory record was not found".into(),
+        ));
+    }
+    let mut block = data.to_vec();
+    block.resize(room as usize, 0);
+    w.write_at(u64::from(lba) * SECTOR, &block)?;
+    let len = data.len() as u32;
+    for pos in positions {
+        let mut head = [0u8; 18];
+        w.read_at(pos, &mut head)?;
+        put_le32(&mut head, 10, len);
+        put_be32(&mut head, 14, len);
+        w.write_at(pos, &head)?;
+    }
+    Ok(())
 }
 
 fn parse_record(rec: &[u8], joliet: bool, _rr: bool) -> Option<Record> {

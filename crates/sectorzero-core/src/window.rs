@@ -39,6 +39,11 @@ impl Window {
         self.len
     }
 
+    /// A second window on the same byte range, with its own (empty) cache.
+    pub(crate) fn reopen(&self) -> Window {
+        Window::new(self.disk.clone(), self.start, self.len, self.writable)
+    }
+
     fn fill_cache(&mut self, at: u64) -> io::Result<()> {
         let aligned = at - at % SECTOR;
         let want = (self.len - aligned).min(CACHE_BYTES as u64) as usize;

@@ -5,12 +5,16 @@ const { invoke } = window.__TAURI__.core;
 const dialog = window.__TAURI__.dialog;
 const { getCurrentWebview } = window.__TAURI__.webview;
 
-const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk', 'imz', 'wlz', 'vhd', 'vhdx', 'vmdk', 'iso'];
+const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk', 'imz', 'wlz', 'vhd', 'vud', 'vhdx', 'vmdk', 'vdi', 'qcow2', '001',
+  'nhd', 'hdi', 'fdi', 'iso', 'cue', 'bin', 'nrg', 'mds', 'mdf'];
 const IMAGE_FILTERS = [
   { name: 'Disk images', extensions: IMAGE_EXTS },
   { name: 'All files', extensions: ['*'] },
 ];
-const CONTAINER_EXT = { raw: 'ima', imz: 'imz', vhd: 'vhd', vhdx: 'vhdx', vmdk: 'vmdk' };
+const CONTAINER_EXT = {
+  raw: 'ima', imz: 'imz', vhd: 'vhd', vhdx: 'vhdx', vmdk: 'vmdk', vdi: 'vdi', qcow2: 'qcow2', nhd: 'nhd', hdi: 'hdi', fdi: 'fdi',
+};
+const DYNAMIC = ['vhd', 'vhdx', 'vmdk', 'vdi'];
 const filterFor = (container) => [
   { name: container === 'raw' ? 'Raw image' : container.toUpperCase(), extensions: container === 'raw' ? ['ima', 'img', 'vfd', 'flp'] : [CONTAINER_EXT[container]] },
 ];
@@ -209,21 +213,95 @@ async function actionOpen() {
   if (path) await openImage(path);
 }
 
+// ---------- custom geometry fields (New and Change format dialogs) ----------
+
+const hex = (n) => `0x${n.toString(16).toUpperCase().padStart(2, '0')}`;
+const parseNum = (s, dflt) => {
+  const t = String(s).trim();
+  if (!t) return dflt;
+  const n = t.toLowerCase().startsWith('0x') ? parseInt(t, 16) : Number(t);
+  if (!Number.isFinite(n)) throw new Error(`"${t}" is not a number.`);
+  return n;
+};
+
+// Defaults match `s0 new --sectors`: 32 sectors/track, 64 heads, media F8, 2 FATs, drive 80h.
+const GEO_DEFAULT = {
+  total_sectors: 131072, sectors_per_track: 32, heads: 64, bytes_per_cluster: 0, root_entries: 0,
+  fats: 2, media: 0xF8, fat_bits: 0, hidden_sectors: 0, drive_number: 0x80,
+};
+
+function geoInit(box) {
+  if (box.firstChild) return;
+  box.append($('geoTpl').content.cloneNode(true));
+  const f = (n) => box.querySelector(`[name="${n}"]`);
+  const showSize = () => { f('size').value = human((Number(f('total_sectors').value) || 0) * 512); };
+  f('total_sectors').oninput = showSize;
+  // The dialog's action is already running (state.busy), so this can't go through run().
+  box.querySelector('[data-geo-like]').onclick = async () => {
+    try {
+      const p = await dialog.open({
+        title: 'Copy the layout of', multiple: false,
+        filters: [{ name: 'Images and boot sectors', extensions: [...IMAGE_EXTS, 'bin', 'bs'] }, { name: 'All files', extensions: ['*'] }],
+      });
+      if (p) geoFill(box, await invoke('geometry_of', { path: p }));
+    } catch (e) {
+      await showError(e);
+    }
+  };
+  geoFill(box, GEO_DEFAULT);
+}
+
+function geoFill(box, g) {
+  const f = (n) => box.querySelector(`[name="${n}"]`);
+  for (const k of ['total_sectors', 'sectors_per_track', 'heads', 'hidden_sectors']) f(k).value = g[k];
+  f('root_entries').value = g.root_entries || '';
+  f('bytes_per_cluster').value = String(g.bytes_per_cluster);
+  f('fat_bits').value = String(g.fat_bits);
+  f('fats').value = String(g.fats);
+  f('media').value = hex(g.media);
+  f('drive_number').value = hex(g.drive_number);
+  f('total_sectors').oninput();
+}
+
+function geoRead(box) {
+  const f = (n) => box.querySelector(`[name="${n}"]`).value;
+  return {
+    total_sectors: parseNum(f('total_sectors')),
+    sectors_per_track: parseNum(f('sectors_per_track')),
+    heads: parseNum(f('heads')),
+    bytes_per_cluster: Number(f('bytes_per_cluster')),
+    root_entries: parseNum(f('root_entries'), 0),
+    fats: Number(f('fats')),
+    media: parseNum(f('media'), 0xF8),
+    fat_bits: Number(f('fat_bits')),
+    hidden_sectors: parseNum(f('hidden_sectors'), 0),
+    drive_number: parseNum(f('drive_number'), 0x80),
+  };
+}
+
+// Hidden fields must not block the form's validation.
+function geoEnable(box, on) {
+  box.querySelectorAll('input, select, button').forEach((el) => { el.disabled = !on; });
+}
+
 function syncNewDialog() {
   const kind = document.querySelector('input[name="newKind"]:checked').value;
   document.querySelectorAll('#newDlg [data-kind]').forEach((el) => { el.hidden = el.dataset.kind !== kind; });
+  geoEnable($('newGeo'), kind === 'custom');
   const c = $('newContainer').value;
-  $('newDynamic').disabled = !['vhd', 'vhdx', 'vmdk'].includes(c);
+  $('newDynamic').disabled = !DYNAMIC.includes(c);
 }
 
 async function actionNew() {
   await loadFormats();
   if (!$('newFormat').options.length) fillFormatSelect($('newFormat'));
+  geoInit($('newGeo'));
   syncNewDialog();
   if (await showDialog($('newDlg')) !== 'ok') return;
   const kind = document.querySelector('input[name="newKind"]:checked').value;
+  const geometry = kind === 'custom' ? geoRead($('newGeo')) : null;
   const container = $('newContainer').value;
-  const ext = CONTAINER_EXT[container] === 'ima' && kind === 'disk' ? 'img' : CONTAINER_EXT[container];
+  const ext = CONTAINER_EXT[container] === 'ima' && kind !== 'floppy' ? 'img' : CONTAINER_EXT[container];
   const path = await dialog.save({ title: 'Save new image as', defaultPath: `disk.${ext}`, filters: filterFor(container) });
   if (!path) return;
   const spec = {
@@ -234,6 +312,7 @@ async function actionNew() {
     scheme: kind === 'disk' ? $('newScheme').value : 'none',
     container,
     dynamic: !$('newDynamic').disabled && $('newDynamic').checked,
+    geometry,
   };
   state.image = await invoke('new_image', { spec });
   state.partition = null;
@@ -402,16 +481,29 @@ async function actionDefrag() {
 async function actionFormat() {
   await loadFormats();
   fillFormatSelect($('formatSel'), { withDisk: true, selected: '' });
-  const sync = () => { $('formatSizeWrap').hidden = $('formatSel').value !== 'disk'; };
+  const o = document.createElement('option');
+  o.value = 'custom';
+  o.textContent = 'Custom layout (below)';
+  $('formatSel').append(o);
+  geoInit($('formatGeo'));
+  try { geoFill($('formatGeo'), await invoke('geometry_of', { path: null })); } catch { /* keep defaults */ }
+  const sync = () => {
+    $('formatSizeWrap').hidden = $('formatSel').value !== 'disk';
+    $('formatGeoWrap').hidden = $('formatSel').value !== 'custom';
+    geoEnable($('formatGeo'), $('formatSel').value === 'custom');
+  };
   $('formatSel').onchange = sync;
   $('formatSize').value = Math.max(1, Math.round(state.image.info.volume_size / 1048576));
   sync();
   if (await showDialog($('formatDlg')) !== 'ok') return;
-  const disk = $('formatSel').value === 'disk';
+  const choice = $('formatSel').value;
+  const disk = choice === 'disk';
+  const custom = choice === 'custom';
   const keep = state.image.path;
   state.image = await invoke('change_format', {
-    format: disk ? null : $('formatSel').value,
+    format: disk || custom ? null : choice,
     sizeMb: disk ? Number($('formatSize').value) : null,
+    geometry: custom ? geoRead($('formatGeo')) : null,
   });
   state.image.path = keep;
   state.dir = '';
@@ -420,7 +512,7 @@ async function actionFormat() {
 }
 
 async function actionSaveAs() {
-  const sync = () => { $('saveDynamic').disabled = !['vhd', 'vhdx', 'vmdk'].includes($('saveContainer').value); };
+  const sync = () => { $('saveDynamic').disabled = !DYNAMIC.includes($('saveContainer').value); };
   $('saveContainer').onchange = sync;
   sync();
   if (await showDialog($('saveAsDlg')) !== 'ok') return;
@@ -473,6 +565,19 @@ async function actionBootImage() {
   setStatus(`Boot image saved to ${dest} (${fmtBytes(n)} bytes)`);
 }
 
+async function actionDiff() {
+  const dest = await dialog.save({
+    title: 'Create a differencing disk', defaultPath: `${stem(state.image.name)}-changes.vhd`,
+    filters: [{ name: 'Differencing VHD', extensions: ['vhd'] }, { name: 'Virtual PC undo disk', extensions: ['vud'] }],
+  });
+  if (!dest) return;
+  state.image = await invoke('make_differencing', { dest });
+  state.partition = null;
+  state.dir = '';
+  await refresh();
+  setStatus(`Created ${baseName(dest)}; changes now go there and ${baseName(state.image.info.container.parent || 'the parent')} stays as it is`);
+}
+
 async function actionInfo() {
   await refreshInfo();
   const i = state.image.info;
@@ -485,6 +590,7 @@ async function actionInfo() {
     ['File system', i.fs_type + (i.fs_writable ? '' : ' (read-only)')],
   ];
   if (c.comment) rows.push(['Comment', c.comment]);
+  if (c.parent) rows.push(['Parent', c.parent]);
   if (i.iso) {
     rows.push(['Volume ID', i.label || '(none)']);
     if (i.iso.application) rows.push(['Application', i.iso.application]);
@@ -511,6 +617,155 @@ async function actionInfo() {
   $('infoDlg').showModal();
 }
 
+const selectedEntries = () => state.entries.filter((e) => state.selected.has(e.path));
+const toLocalInput = (s) => (s ? s.replace(' ', 'T') : '');
+
+async function actionProps() {
+  const items = selectedEntries();
+  if (!items.length) return;
+  const one = items.length === 1 ? items[0] : null;
+  $('propsTitle').textContent = one ? `Properties of ${one.name}` : `Properties of ${items.length} items`;
+  $('propsHint').textContent = one
+    ? `${one.is_dir ? 'Folder' : `${fmtBytes(one.size)} bytes`}${one.short_name && one.short_name !== one.name ? ` — short name ${one.short_name}` : ''}`
+    : 'Mixed values are shown as a dash; leave them alone to keep each item as it is.';
+  const touched = new Set();
+  for (const box of document.querySelectorAll('#propsAttrs input')) {
+    const k = box.dataset.attr;
+    const on = items.filter((e) => e.attributes[k]).length;
+    box.checked = on === items.length;
+    box.indeterminate = on > 0 && on < items.length;
+    box.onchange = () => touched.add(k);
+  }
+  const dates = { propsModified: 'modified', propsCreated: 'created', propsAccessed: 'accessed' };
+  for (const [id, k] of Object.entries(dates)) {
+    const same = items.every((e) => e[k] === items[0][k]);
+    $(id).value = same ? toLocalInput(items[0][k]) : '';
+    $(id).oninput = () => touched.add(k);
+  }
+  const anyDir = items.some((e) => e.is_dir);
+  $('propsRecursiveWrap').hidden = !anyDir;
+  $('propsRecursive').checked = false;
+  $('propsRecursive').onchange = () => touched.add('recursive');
+  if (await showDialog($('propsDlg')) !== 'ok') return;
+  const edit = {};
+  for (const box of document.querySelectorAll('#propsAttrs input')) {
+    if (touched.has(box.dataset.attr)) edit[box.dataset.attr] = box.checked;
+  }
+  for (const [id, k] of Object.entries(dates)) {
+    if (touched.has(k) && $(id).value) edit[k] = $(id).value.replace('T', ' ');
+  }
+  const recursive = anyDir && $('propsRecursive').checked;
+  if (!Object.keys(edit).length) return;
+  const n = await invoke('edit_entries', { paths: items.map((e) => e.path), edit, recursive });
+  await refresh(true);
+  setStatus(`Updated ${n} item(s)`);
+}
+
+async function actionChecksum() {
+  const file = selectedEntries().length === 1 && !selectedEntries()[0].is_dir ? selectedEntries()[0] : null;
+  const fileOpt = $('sumWhat').querySelector('option[value="file"]');
+  fileOpt.disabled = !file;
+  fileOpt.textContent = file ? `The selected file (${file.name})` : 'The selected file (select one file first)';
+  if (!file && $('sumWhat').value === 'file') $('sumWhat').value = 'disk';
+  let last = null;
+  const clear = () => { fillList($('sumList'), []); last = null; $('sumCopy').disabled = true; };
+  clear();
+  $('sumWhat').onchange = clear;
+  $('sumCompute').onclick = async () => {
+    const what = $('sumWhat').value;
+    $('sumCompute').disabled = true;
+    setStatus('Computing checksums…');
+    try {
+      last = await invoke('checksum', { what, path: what === 'file' ? file.path : null });
+      fillList($('sumList'), [
+        ['Bytes', fmtBytes(last.bytes)], ['CRC-32', last.crc32], ['Adler-32', last.adler32],
+        ['MD5', last.md5], ['SHA-1', last.sha1], ['SHA-256', last.sha256],
+      ]);
+      $('sumCopy').disabled = false;
+      setStatus('Checksums computed');
+    } catch (e) {
+      setStatus(e && e.message ? e.message : String(e), 'error');
+    } finally {
+      $('sumCompute').disabled = false;
+    }
+  };
+  $('sumCopy').onclick = async () => {
+    if (!last) return;
+    const text = ['bytes', 'crc32', 'adler32', 'md5', 'sha1', 'sha256'].map((k) => `${k} ${last[k]}`).join('\n');
+    try { await navigator.clipboard.writeText(`${text}\n`); setStatus('Checksums copied'); } catch { setStatus('Could not use the clipboard', 'error'); }
+  };
+  await showDialog($('sumDlg'));
+}
+
+async function actionListing() {
+  const where = state.dir ? `-${baseName(state.dir)}` : '';
+  const dest = await dialog.save({
+    title: 'Export file list', defaultPath: `${stem(state.image.name)}${where}.html`,
+    filters: [{ name: 'Web page', extensions: ['html'] }, { name: 'Text', extensions: ['txt'] }, { name: 'CSV (spreadsheet)', extensions: ['csv'] }],
+  });
+  if (!dest) return;
+  const ext = dest.split('.').pop().toLowerCase();
+  const format = ext === 'csv' ? 'csv' : ext === 'txt' ? 'text' : 'html';
+  const n = await invoke('export_listing', { dest, format, dir: state.dir });
+  setStatus(`Listed ${n} item(s) in ${dest}`);
+}
+
+async function actionTruncate() {
+  const yes = await dialog.ask(
+    'Cut the unused space off the end of this image file? Every file stays where it is; the image just stops after the last used cluster. '
+    + 'It still opens here and grows again when files are added, but some tools and emulators expect the full size.',
+    { title: 'Truncate unused space', kind: 'warning' },
+  );
+  if (!yes) return;
+  const r = await invoke('truncate');
+  await refreshInfo();
+  render();
+  setStatus(r.new_size === r.old_size ? 'Nothing to cut: the last cluster is in use'
+    : `Truncated ${human(r.old_size)} → ${human(r.new_size)}`);
+}
+
+async function actionIsoReplace() {
+  const items = selectedEntries();
+  if (items.length !== 1 || items[0].is_dir) {
+    await dialog.message('Select one file on the CD image first.', { title: 'Replace file' });
+    return;
+  }
+  const target = items[0];
+  const src = await dialog.open({ title: `Replace ${target.name} with`, multiple: false });
+  if (!src) return;
+  const yes = await dialog.ask(
+    `Overwrite ${target.name} on ${state.image.name} with ${baseName(src)}? The new file must fit in the space the old one takes (${fmtBytes(Math.ceil(target.size / 2048) * 2048)} bytes). This changes the image file directly.`,
+    { title: 'Replace file', kind: 'warning' },
+  );
+  if (!yes) return;
+  await invoke('iso_replace', { path: target.path, src });
+  await refresh(true);
+  setStatus(`Replaced ${target.name}`);
+}
+
+// Double-click or Enter on a file: copy it out to a temporary folder and open it.
+async function openEntry(e) {
+  setStatus(`Opening ${e.name}…`);
+  await invoke('open_entry', { path: e.path });
+  setStatus(`Opened a copy of ${e.name} (changes are not saved into the image)`);
+}
+
+// Drag rows out to Explorer / the desktop: files are copied out first, then a native drag starts.
+const drag = { start: null, active: false };
+
+async function dragOut() {
+  const paths = [...state.selected];
+  setStatus(`Preparing ${paths.length} item(s) to drag…`);
+  drag.active = true;
+  try {
+    const dropped = await invoke('drag_out', { paths });
+    setStatus(dropped ? `Dragged out ${paths.length} item(s)` : 'Drag cancelled');
+  } finally {
+    drag.active = false;
+    $('dropzone').hidden = true;
+  }
+}
+
 function enter(dir) {
   state.dir = dir;
   return refresh();
@@ -527,8 +782,15 @@ function updateButtons() {
   for (const id of ['btnNew', 'btnOpen', 'btnIso']) $(id).disabled = state.busy;
   const iso = has && state.image.info.iso;
   $('btnBootImage').hidden = !iso;
-  for (const id of ['btnLabel', 'btnBoot', 'btnDefrag', 'btnFormat']) $(id).hidden = !!iso;
+  for (const id of ['btnLabel', 'btnBoot', 'btnDefrag', 'btnFormat', 'btnProps']) $(id).hidden = !!iso;
   $('btnFormat').disabled ||= !has || state.image.info.layout.kind !== 'BareVolume';
+  const sel = selectedEntries();
+  $('mnuIsoReplace').hidden = !iso;
+  $('mnuIsoReplace').disabled = !(sel.length === 1 && !sel[0].is_dir);
+  $('mnuTruncate').hidden = !!iso;
+  $('mnuDiff').disabled = !(has && state.image.info.container.kind === 'vhd');
+  $('mnuTruncate').disabled = !(writable() && state.image.info.container.kind === 'raw'
+    && state.image.info.layout.kind === 'BareVolume');
   $('partSel').disabled = state.busy;
 }
 
@@ -620,7 +882,10 @@ function render() {
       ], state.selected.has(e.path) ? 'selected' : '');
       tr.title = e.path;
       tr.onclick = (ev) => select(idx, ev);
-      tr.ondblclick = () => { if (e.is_dir) run(() => enter(e.path)); };
+      tr.ondblclick = () => run(() => (e.is_dir ? enter(e.path) : openEntry(e)));
+      tr.onmousedown = (ev) => {
+        if (ev.button === 0 && !ev.shiftKey && !ev.ctrlKey) drag.start = { x: ev.clientX, y: ev.clientY, idx };
+      };
       tbody.append(tr);
     });
   }
@@ -663,6 +928,41 @@ $('btnBootImage').onclick = () => run(actionBootImage);
 $('btnSaveAs').onclick = () => run(actionSaveAs);
 $('btnIso').onclick = () => run(actionIso);
 $('btnInfo').onclick = () => run(actionInfo);
+$('btnProps').onclick = () => run(actionProps);
+
+// Tools menu: a popover placed under its button; each item closes it first.
+$('toolsMenu').addEventListener('beforetoggle', (ev) => {
+  if (ev.newState !== 'open') return;
+  const r = $('btnTools').getBoundingClientRect();
+  const m = $('toolsMenu');
+  m.style.top = `${r.bottom + 4}px`;
+  m.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 240))}px`;
+});
+const menuItem = (id, fn) => { $(id).onclick = () => { $('toolsMenu').hidePopover(); run(fn); }; };
+menuItem('mnuChecksum', actionChecksum);
+menuItem('mnuListing', actionListing);
+menuItem('mnuTruncate', actionTruncate);
+menuItem('mnuIsoReplace', actionIsoReplace);
+menuItem('mnuDiff', actionDiff);
+
+// A press on a row that moves a few pixels starts dragging the selection out of the window.
+document.addEventListener('mousemove', (ev) => {
+  const s = drag.start;
+  if (!s || drag.active || state.busy) return;
+  if (!(ev.buttons & 1)) { drag.start = null; return; }
+  if (Math.hypot(ev.clientX - s.x, ev.clientY - s.y) < 6) return;
+  drag.start = null;
+  const path = state.entries[s.idx]?.path;
+  if (!path) return;
+  if (!state.selected.has(path)) {
+    state.selected.clear();
+    state.selected.add(path);
+    state.anchor = s.idx;
+    render();
+  }
+  run(dragOut);
+});
+document.addEventListener('mouseup', () => { drag.start = null; });
 $('partSel').onchange = () => run(() => openImage(state.image.path, Number($('partSel').value)));
 document.querySelectorAll('input[name="newKind"]').forEach((r) => { r.onchange = syncNewDialog; });
 $('newContainer').onchange = syncNewDialog;
@@ -681,14 +981,17 @@ document.addEventListener('keydown', (ev) => {
   else if (k === 'Insert' && writable()) run(actionInject);
   else if (k === 'F2' && writable()) run(actionRename);
   else if (k === 'Backspace' && state.dir) run(() => enter(parent(state.dir)));
+  else if (k === 'Enter' && ev.altKey && state.selected.size && writable()) run(actionProps);
   else if (k === 'Enter' && state.selected.size === 1) {
     const e = state.entries.find((x) => state.selected.has(x.path));
-    if (e && e.is_dir) run(() => enter(e.path));
+    if (e) run(() => (e.is_dir ? enter(e.path) : openEntry(e)));
   }
 });
 
 // Files dropped from Explorer: open an image, or inject into the current folder.
 getCurrentWebview().onDragDropEvent((event) => {
+  // Our own drag-out passing over (or dropped back on) the window is not an inject.
+  if (drag.active) return;
   const p = event.payload;
   const zone = $('dropzone');
   const opening = !state.image || !writable();

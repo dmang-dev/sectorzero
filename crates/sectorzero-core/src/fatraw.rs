@@ -398,6 +398,195 @@ fn walk_with(w: &mut Window, b: &Bpb, fat: &Fat) -> Result<Tree> {
     Ok(tree)
 }
 
+/// Byte offset just past the last cluster in use (or the end of the root folder area when
+/// no cluster is used): everything after it can be truncated.
+pub(crate) fn used_end(w: &mut Window) -> Result<u64> {
+    let b = Bpb::parse(&read_boot(w)?)?;
+    let fat = load_fat(w, &b)?;
+    let last = (2..b.clusters as usize + 2)
+        .rev()
+        .find(|&c| fat.entries[c] != 0);
+    Ok(match last {
+        Some(c) => b.cluster_offset(c as u32) + b.cluster,
+        None => b.data_offset,
+    })
+}
+
+// --- file attributes and dates --------------------------------------------------------
+
+/// Changes to a file's or folder's attributes and timestamps (WinImage's file properties).
+/// `None` leaves a field unchanged. Times are local, as FAT stores them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EntryEdit {
+    pub read_only: Option<bool>,
+    pub hidden: Option<bool>,
+    pub system: Option<bool>,
+    pub archive: Option<bool>,
+    /// `YYYY-MM-DD`, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS`.
+    pub modified: Option<String>,
+    pub created: Option<String>,
+    /// FAT keeps only the date of the last access.
+    pub accessed: Option<String>,
+}
+
+impl EntryEdit {
+    pub fn is_empty(&self) -> bool {
+        self.read_only.is_none()
+            && self.hidden.is_none()
+            && self.system.is_none()
+            && self.archive.is_none()
+            && self.modified.is_none()
+            && self.created.is_none()
+            && self.accessed.is_none()
+    }
+}
+
+/// Parse a local date/time into FAT's (time, date, 10 ms units) fields.
+pub(crate) fn parse_fat_datetime(s: &str) -> Result<(u16, u16, u8)> {
+    let bad = || {
+        Error::Invalid(format!(
+            "invalid date {s:?} (use YYYY-MM-DD or YYYY-MM-DD HH:MM[:SS], 1980-2107)"
+        ))
+    };
+    let s = s.trim();
+    let (d, t) = match s.split_once([' ', 'T']) {
+        Some((d, t)) => (d, Some(t.trim())),
+        None => (s, None),
+    };
+    let nums = |p: &str, sep: char| -> Option<Vec<u32>> {
+        p.split(sep).map(|x| x.trim().parse().ok()).collect()
+    };
+    let dp = nums(d, '-').filter(|v| v.len() == 3).ok_or_else(bad)?;
+    let tp = match t {
+        Some(t) => nums(t, ':')
+            .filter(|v| v.len() == 2 || v.len() == 3)
+            .ok_or_else(bad)?,
+        None => vec![0, 0],
+    };
+    let (y, mo, da) = (dp[0], dp[1], dp[2]);
+    let (h, mi, se) = (tp[0], tp[1], tp.get(2).copied().unwrap_or(0));
+    if !(1980..=2107).contains(&y)
+        || chrono::NaiveDate::from_ymd_opt(y as i32, mo, da).is_none()
+        || chrono::NaiveTime::from_hms_opt(h, mi, se).is_none()
+    {
+        return Err(bad());
+    }
+    let time = ((h << 11) | (mi << 5) | (se / 2)) as u16;
+    let date = (((y - 1980) << 9) | (mo << 5) | da) as u16;
+    Ok((time, date, ((se % 2) * 100) as u8))
+}
+
+/// The entry at `path` (long or 8.3 names, case-insensitive). `None` for the root.
+fn resolve(t: &Tree, path: &str) -> Result<Option<usize>> {
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let mut dir = 0usize;
+    let parts: Vec<&str> = path.split('/').collect();
+    for (k, part) in parts.iter().enumerate() {
+        let want = part.to_lowercase();
+        let found = t.entries.iter().position(|e| {
+            e.dir == dir
+                && e.dot == 0
+                && (e.path.rsplit('/').next().unwrap_or("").to_lowercase() == want
+                    || short_name(&e.raw).to_lowercase() == want)
+        });
+        let Some(i) = found else {
+            return Err(Error::NotFound(path.to_string()));
+        };
+        if k + 1 == parts.len() {
+            return Ok(Some(i));
+        }
+        dir = t.entries[i]
+            .child
+            .ok_or_else(|| Error::NotFound(path.to_string()))?;
+    }
+    unreachable!()
+}
+
+/// Apply `edit` to the entry at `path` (and, with `recursive`, everything below it; the root
+/// path with `recursive` means every entry). Returns the number of entries changed.
+pub(crate) fn edit_entries(
+    w: &mut Window,
+    path: &str,
+    edit: &EntryEdit,
+    recursive: bool,
+) -> Result<u64> {
+    let modified = edit
+        .modified
+        .as_deref()
+        .map(parse_fat_datetime)
+        .transpose()?;
+    let created = edit
+        .created
+        .as_deref()
+        .map(parse_fat_datetime)
+        .transpose()?;
+    let accessed = edit
+        .accessed
+        .as_deref()
+        .map(parse_fat_datetime)
+        .transpose()?;
+    let b = Bpb::parse(&read_boot(w)?)?;
+    let t = walk(w, &b)?;
+    let top = resolve(&t, path)?;
+    if top.is_none() && !recursive {
+        return Err(Error::Invalid(
+            "the root folder has no attributes (use recursive to change everything in it)".into(),
+        ));
+    }
+    let mut targets: Vec<usize> = top.into_iter().collect();
+    if recursive {
+        let mut dirs = VecDeque::new();
+        match top {
+            Some(i) => dirs.extend(t.entries[i].child),
+            None => dirs.push_back(0),
+        }
+        while let Some(d) = dirs.pop_front() {
+            for (i, e) in t.entries.iter().enumerate() {
+                if e.dir == d && e.dot == 0 {
+                    targets.push(i);
+                    dirs.extend(e.child);
+                }
+            }
+        }
+    }
+    let mut changed = 0;
+    for i in targets {
+        let e = &t.entries[i];
+        let mut raw = e.raw;
+        for (on, bit) in [
+            (edit.read_only, 0x01u8),
+            (edit.hidden, 0x02),
+            (edit.system, 0x04),
+            (edit.archive, 0x20),
+        ] {
+            match on {
+                Some(true) => raw[11] |= bit,
+                Some(false) => raw[11] &= !bit,
+                None => {}
+            }
+        }
+        if let Some((time, date, _)) = modified {
+            put_le16(&mut raw, 22, time);
+            put_le16(&mut raw, 24, date);
+        }
+        if let Some((time, date, tenths)) = created {
+            raw[13] = tenths;
+            put_le16(&mut raw, 14, time);
+            put_le16(&mut raw, 16, date);
+        }
+        if let Some((_, date, _)) = accessed {
+            put_le16(&mut raw, 18, date);
+        }
+        if raw != e.raw {
+            w_entry(w, &b, &t.dirs[e.dir].chain, e.index, &raw)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 // --- volume label ---------------------------------------------------------------------
 
 fn fat_now() -> (u16, u16) {

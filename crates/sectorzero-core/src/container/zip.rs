@@ -231,6 +231,7 @@ impl Disk for ZipDisk {
             members: self.members.clone(),
             member: Some(self.member.clone()),
             comment: (!self.comment.is_empty()).then(|| self.comment.clone()),
+            parent: None,
         }
     }
 }

@@ -61,6 +61,10 @@ pub struct Entry {
     pub size: u64,
     /// `YYYY-MM-DD HH:MM:SS` (local time for FAT).
     pub modified: String,
+    /// `YYYY-MM-DD HH:MM:SS`, or empty when the file system has none.
+    pub created: String,
+    /// `YYYY-MM-DD` (FAT keeps only the date), or empty.
+    pub accessed: String,
     pub attributes: Attributes,
 }
 
@@ -174,12 +178,47 @@ fn format_fat(
             .sectors_per_track(63)
             .heads(255)
             .drive_num(0x80),
+        NewImage::Custom(g) => {
+            g.validate()?;
+            let mut f = fmt
+                .fats(g.fats)
+                .media(if g.media == 0 { 0xF8 } else { g.media })
+                .sectors_per_track(g.sectors_per_track)
+                .heads(g.heads)
+                .drive_num(g.drive_number);
+            if g.bytes_per_cluster != 0 {
+                f = f.bytes_per_cluster(g.bytes_per_cluster);
+            }
+            if g.root_entries != 0 {
+                f = f.max_root_dir_entries(g.root_entries);
+            }
+            match g.fat_bits {
+                12 => f = f.fat_type(FatType::Fat12),
+                16 => f = f.fat_type(FatType::Fat16),
+                32 => f = f.fat_type(FatType::Fat32),
+                _ => {}
+            }
+            f
+        }
     };
     if let Some(l) = label {
         fmt = fmt.volume_label(l);
     }
-    let disk = w;
-    fatfs::format_volume(disk, fmt).map_err(|e| Error::Invalid(format!("cannot format: {e}")))?;
+    let mut disk = w.reopen();
+    fatfs::format_volume(w, fmt).map_err(|e| Error::Invalid(format!("cannot format: {e}")))?;
+    if let NewImage::Custom(g) = spec
+        && g.hidden_sectors != 0
+        && hidden == 0
+    {
+        let mut boot = [0u8; 512];
+        disk.read_at(0, &mut boot)?;
+        put_le32(&mut boot, 28, g.hidden_sectors);
+        disk.write_at(0, &boot)?;
+        let b = fatraw::Bpb::parse(&boot)?;
+        if b.backup_boot != 0 {
+            disk.write_at(b.backup_boot * 512, &boot)?;
+        }
+    }
     Ok(())
 }
 
@@ -236,9 +275,11 @@ impl Volume {
     /// Create a new, empty, formatted image file.
     pub fn create(path: &Path, spec: NewImage, opts: &CreateOptions) -> Result<()> {
         let size = spec.size_bytes();
-        if matches!(spec, NewImage::Floppy(_)) && opts.scheme != PartitionScheme::None {
+        if matches!(spec, NewImage::Floppy(_) | NewImage::Custom(_))
+            && opts.scheme != PartitionScheme::None
+        {
             return Err(Error::Invalid(
-                "floppy images have no partition table".into(),
+                "floppy and custom-geometry images have no partition table".into(),
             ));
         }
         let label = opts.label.as_deref().map(encode_label).transpose()?;
@@ -477,6 +518,27 @@ impl Volume {
             extract_entry(&e, dest, overwrite, &mut stats)?;
         }
         Ok(stats)
+    }
+
+    /// Write one file's contents to `out`. Returns its size.
+    pub fn copy_out(&self, path: &str, out: &mut dyn io::Write) -> Result<u64> {
+        let fs = match &self.fs {
+            Fs::Iso(iso) => return iso.copy_out(path, out),
+            Fs::Fat(fs) => fs,
+        };
+        let path = norm(path)?;
+        let e = find(fs, &path)?.ok_or_else(|| Error::NotFound(display(&path)))?;
+        if e.is_dir() {
+            return Err(Error::Invalid(format!("{} is a folder", display(&path))));
+        }
+        Ok(io::copy(&mut e.to_file(), out)?)
+    }
+
+    /// Checksums of one file inside the image.
+    pub fn checksum(&self, path: &str) -> Result<crate::Checksums> {
+        let mut h = crate::checksum::Hasher::new();
+        self.copy_out(path, &mut h)?;
+        Ok(h.finish())
     }
 
     /// El Torito boot image of an ISO (1-based boot catalog entry).
@@ -894,6 +956,8 @@ fn to_entry(e: &FatEntry<'_>, parent: &str) -> Entry {
         is_dir: e.is_dir(),
         size: if e.is_dir() { 0 } else { e.len() },
         modified: format_time(e.modified()),
+        created: format_time(e.created()),
+        accessed: format_date(e.accessed()),
         attributes: Attributes {
             read_only: a.contains(FileAttributes::READ_ONLY),
             hidden: a.contains(FileAttributes::HIDDEN),
@@ -975,7 +1039,17 @@ fn new_volume_id() -> u32 {
     (d.as_secs() as u32).rotate_left(16) ^ d.subsec_nanos()
 }
 
+fn format_date(d: fatfs::Date) -> String {
+    if d.month == 0 || d.day == 0 {
+        return String::new();
+    }
+    format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)
+}
+
 fn format_time(t: fatfs::DateTime) -> String {
+    if t.date.month == 0 || t.date.day == 0 {
+        return String::new();
+    }
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
         t.date.year, t.date.month, t.date.day, t.time.hour, t.time.min, t.time.sec
