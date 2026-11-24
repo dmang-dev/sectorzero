@@ -3078,7 +3078,7 @@ struct ExtEdit {
 
 /// Local `YYYY-MM-DD`, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS` (a `T` may separate the
 /// date and the time).
-fn parse_local_time(s: &str) -> Result<SystemTime> {
+pub(crate) fn parse_local_time(s: &str) -> Result<SystemTime> {
     let bad = || {
         Error::Invalid(format!(
             "invalid date {s:?} (use YYYY-MM-DD or YYYY-MM-DD HH:MM[:SS])"

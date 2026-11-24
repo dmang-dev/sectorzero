@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::container::{self, ContainerInfo, ContainerKind, SharedDisk};
 use crate::error::{Error, Result, display};
+use crate::exfat::ExFatFs;
 use crate::ext::{ExtFormat, ExtFs};
 use crate::fatraw;
 use crate::format::{FloppyFormat, NewImage};
@@ -120,6 +121,8 @@ pub enum FsKind {
     Ext3,
     /// Extents and metadata checksums; journaled when the volume is 2 MiB or more.
     Ext4,
+    /// exFAT (from 1 MiB; MBR type 0x07 / GPT basic data when partitioned).
+    Exfat,
 }
 
 impl FsKind {
@@ -129,6 +132,7 @@ impl FsKind {
             "ext2" => Some(FsKind::Ext2),
             "ext3" => Some(FsKind::Ext3),
             "ext4" => Some(FsKind::Ext4),
+            "exfat" => Some(FsKind::Exfat),
             _ => None,
         }
     }
@@ -152,6 +156,7 @@ enum Fs {
     Fat(Box<FatFs>),
     Iso(Box<IsoFs>),
     Ext(Box<ExtFs>),
+    Exfat(Box<ExFatFs>),
     Ntfs(Box<NtfsFs>),
 }
 
@@ -280,10 +285,11 @@ impl Volume {
                 Fs::Fat(Box::new(fs))
             }
             Some("ext2" | "ext3" | "ext4") => Fs::Ext(Box::new(ExtFs::open(w, image.writable)?)),
+            Some("exFAT") => Fs::Exfat(Box::new(ExFatFs::open(w, image.writable)?)),
             Some("NTFS") => Fs::Ntfs(Box::new(NtfsFs::open(w)?)),
             Some(other) => {
                 return Err(Error::Unsupported(format!(
-                    "{other} volumes (FAT, ext2/3/4, NTFS and ISO 9660 are readable)"
+                    "{other} volumes (FAT, exFAT, ext2/3/4, NTFS and ISO 9660 are readable)"
                 )));
             }
             None => {
@@ -292,7 +298,7 @@ impl Volume {
                         "partition {} ({}) has no file system SectorZero can read",
                         p.index, p.type_name
                     )),
-                    None => Error::NotFat("no FAT, ext or NTFS file system found".into()),
+                    None => Error::NotFat("no FAT, exFAT, ext or NTFS file system found".into()),
                 });
             }
         };
@@ -311,6 +317,18 @@ impl Volume {
         match &self.fs {
             Fs::Ext(e) => e.check(),
             _ => Err(Error::Unsupported("ext_check on a non-ext volume".into())),
+        }
+    }
+
+    /// Consistency problems in an exFAT file system (boot checksums, entry set checksums,
+    /// name hashes, cluster ownership against the bitmap); empty when clean. A test aid.
+    #[doc(hidden)]
+    pub fn exfat_check(&self) -> Result<Vec<String>> {
+        match &self.fs {
+            Fs::Exfat(e) => e.check(),
+            _ => Err(Error::Unsupported(
+                "exfat_check on a non-exFAT volume".into(),
+            )),
         }
     }
 
@@ -340,6 +358,33 @@ impl Volume {
             opts.overwrite,
         )?);
         let result = (|| -> Result<()> {
+            if opts.fs == FsKind::Exfat {
+                if matches!(spec, NewImage::Custom(_)) {
+                    return Err(Error::Invalid(
+                        "custom layouts are FAT boot sector parameters; they do not apply to exFAT"
+                            .into(),
+                    ));
+                }
+                crate::exfat::format(
+                    Window::new(disk.clone(), start * 512, sectors * 512, true),
+                    opts.label.as_deref(),
+                    start,
+                )?;
+                let mut d = lock(&disk)?;
+                match opts.scheme {
+                    PartitionScheme::Mbr => partition::write_mbr(d.as_mut(), 0x07, start, sectors)?,
+                    PartitionScheme::Gpt => partition::write_gpt(
+                        d.as_mut(),
+                        BASIC_DATA,
+                        "Basic data partition",
+                        start,
+                        sectors,
+                    )?,
+                    PartitionScheme::None => {}
+                }
+                d.sync()?;
+                return Ok(());
+            }
             if opts.fs != FsKind::Fat {
                 if matches!(spec, NewImage::Custom(_)) {
                     return Err(Error::Invalid(
@@ -486,6 +531,36 @@ impl Volume {
                     iso: None,
                 })
             }
+            Fs::Exfat(e) => {
+                let i = e.info();
+                let blocker = e.write_blocker();
+                Ok(VolumeInfo {
+                    fs_type: "exFAT".into(),
+                    label: i.label,
+                    volume_id: format!(
+                        "{:04X}-{:04X}",
+                        (i.serial >> 16) & 0xFFFF,
+                        i.serial & 0xFFFF
+                    ),
+                    oem_name: String::new(),
+                    bytes_per_sector: i.sector_size as u16,
+                    cluster_size: i.cluster_size as u32,
+                    total_clusters: i.clusters,
+                    free_clusters: i.free_clusters as u32,
+                    total_bytes: u64::from(i.clusters) * i.cluster_size,
+                    free_bytes: i.free_clusters * i.cluster_size,
+                    volume_offset: offset,
+                    volume_size: size,
+                    layout: self.image.layout.clone(),
+                    partition: self.image.partition.clone(),
+                    floppy_format: None,
+                    writable: self.image.writable && blocker.is_none(),
+                    fs_writable: blocker.is_none(),
+                    read_only_reason: blocker,
+                    container,
+                    iso: None,
+                })
+            }
             Fs::Ntfs(n) => {
                 let i = n.info();
                 let cluster = u64::from(i.cluster_size);
@@ -574,6 +649,7 @@ impl Volume {
         match &self.fs {
             Fs::Iso(iso) => Ok(iso.info().volume_id.clone()),
             Fs::Ext(e) => Ok(e.info().label),
+            Fs::Exfat(e) => Ok(e.info().label),
             Fs::Ntfs(n) => Ok(n.label()),
             Fs::Fat(fs) => {
                 let label = match fs.read_volume_label_from_root_dir()? {
@@ -595,6 +671,7 @@ impl Volume {
         let fs = match &self.fs {
             Fs::Iso(iso) => return iso.list(dir),
             Fs::Ext(e) => return e.list(&norm(dir)?),
+            Fs::Exfat(e) => return e.list(&norm(dir)?),
             Fs::Ntfs(n) => return n.list(&norm(dir)?),
             Fs::Fat(fs) => fs,
         };
@@ -634,6 +711,7 @@ impl Volume {
         let fs = match &self.fs {
             Fs::Iso(iso) => return iso.stat(path),
             Fs::Ext(e) => return e.stat(&norm(path)?),
+            Fs::Exfat(e) => return e.stat(&norm(path)?),
             Fs::Ntfs(n) => return n.stat(&norm(path)?),
             Fs::Fat(fs) => fs,
         };
@@ -648,6 +726,7 @@ impl Volume {
         let fs = match &self.fs {
             Fs::Iso(iso) => return iso.extract(src, dest, overwrite),
             Fs::Ext(e) => return e.extract(&norm(src)?, dest, overwrite),
+            Fs::Exfat(e) => return e.extract(&norm(src)?, dest, overwrite),
             Fs::Ntfs(n) => return n.extract(&norm(src)?, dest, overwrite),
             Fs::Fat(fs) => fs,
         };
@@ -668,6 +747,7 @@ impl Volume {
         let fs = match &self.fs {
             Fs::Iso(iso) => return iso.copy_out(path, out),
             Fs::Ext(e) => return e.copy_out(&norm(path)?, out),
+            Fs::Exfat(e) => return e.copy_out(&norm(path)?, out),
             Fs::Ntfs(n) => return n.copy_out(&norm(path)?, out),
             Fs::Fat(fs) => fs,
         };
@@ -699,8 +779,10 @@ impl Volume {
 
     /// Copy a host file or folder into folder `dest_dir` of the image (created if missing).
     pub fn inject(&self, host: &Path, dest_dir: &str, overwrite: bool) -> Result<Stats> {
-        if let Fs::Ext(e) = &self.fs {
-            return e.inject(host, &norm(dest_dir)?, overwrite);
+        match &self.fs {
+            Fs::Ext(e) => return e.inject(host, &norm(dest_dir)?, overwrite),
+            Fs::Exfat(e) => return e.inject(host, &norm(dest_dir)?, overwrite),
+            _ => {}
         }
         let fs = self.fat_writable()?;
         let dest_dir = norm(dest_dir)?;
@@ -715,8 +797,10 @@ impl Volume {
         if path.is_empty() {
             return Err(Error::InvalidPath("/".into()));
         }
-        if let Fs::Ext(e) = &self.fs {
-            return e.mkdir(&path);
+        match &self.fs {
+            Fs::Ext(e) => return e.mkdir(&path),
+            Fs::Exfat(e) => return e.mkdir(&path),
+            _ => {}
         }
         let fs = self.fat_writable()?;
         ensure_dir(fs, &path).map(|_| ())
@@ -728,8 +812,10 @@ impl Volume {
         if path.is_empty() {
             return Err(Error::InvalidPath("cannot remove the root folder".into()));
         }
-        if let Fs::Ext(e) = &self.fs {
-            return e.remove(&path, recursive);
+        match &self.fs {
+            Fs::Ext(e) => return e.remove(&path, recursive),
+            Fs::Exfat(e) => return e.remove(&path, recursive),
+            _ => {}
         }
         self.fat_writable()?;
         let mut stats = Stats::default();
@@ -767,11 +853,13 @@ impl Volume {
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
         let from = norm(from)?;
         let to = norm(to)?;
-        if let Fs::Ext(e) = &self.fs {
-            if from.is_empty() {
-                return Err(Error::InvalidPath("cannot move the root folder".into()));
-            }
-            return e.rename(&from, &to);
+        if matches!(self.fs, Fs::Ext(_) | Fs::Exfat(_)) && from.is_empty() {
+            return Err(Error::InvalidPath("cannot move the root folder".into()));
+        }
+        match &self.fs {
+            Fs::Ext(e) => return e.rename(&from, &to),
+            Fs::Exfat(e) => return e.rename(&from, &to),
+            _ => {}
         }
         let fs = self.fat_writable()?;
         let src = find(fs, &from)?.ok_or_else(|| Error::NotFound(display(&from)))?;
@@ -801,6 +889,7 @@ impl Volume {
         match fs {
             Fs::Fat(fs) => fs.unmount()?,
             Fs::Ext(e) => e.flush()?,
+            Fs::Exfat(e) => e.flush()?,
             _ => {}
         }
         image.flush()?;
@@ -909,6 +998,7 @@ impl Volume {
                 "writing to NTFS volumes (read-only so far)".into(),
             )),
             Fs::Ext(_) => Err(Error::Unsupported("this operation on ext volumes".into())),
+            Fs::Exfat(_) => Err(Error::Unsupported("this operation on exFAT volumes".into())),
             Fs::Fat(fs) if self.image.writable => Ok(fs),
             Fs::Fat(_) => Err(Error::Invalid("the image is open read-only".into())),
         }
@@ -1198,7 +1288,7 @@ pub(crate) fn encode_label(label: &str) -> Result<[u8; 11]> {
     Ok(out)
 }
 
-fn new_volume_id() -> u32 {
+pub(crate) fn new_volume_id() -> u32 {
     let d = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();

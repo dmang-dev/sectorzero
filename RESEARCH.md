@@ -253,7 +253,29 @@ administrator rights (root on Linux). Checked on real block devices in the Alpin
 (floppy drive, USB stick, virtio disk); on Windows, only listing and the refusals have been
 tried so far, since this machine's only disk is the system disk.
 
+exFAT (2026-11-23, `exfat.rs`, written from Microsoft's published exFAT specification): read,
+write and create. Mounting verifies the boot region checksum and the up-case table checksum;
+entry sets whose checksum does not match are skipped. Names compare through the volume's
+up-case table, so lookups are case-insensitive beyond ASCII. New files are stored as one
+contiguous run without FAT entries (NoFatChain) when a run is free, otherwise through the FAT;
+folders that outgrow their clusters gain one more (and switch to a FAT chain if the next
+cluster is taken). Writing marks the volume dirty first and clears the flag (and updates
+PercentInUse) when done; volumes that are already dirty, have media failures, two FATs (TexFAT)
+or a revision other than 1.x open read-only. `format` uses Windows' default cluster sizes
+(4 KiB to 256 MiB, 32 KiB to 32 GiB, 128 KiB above), puts the FAT at 1 MiB on volumes of 64 MiB
+or more, and writes an up-case table generated from Rust's Unicode case mapping (one-to-one
+mappings in the Basic Multilingual Plane, identity runs compressed). The tests run
+`Volume::exfat_check` (boot checksums in both regions, entry set checksums, name hashes,
+cluster ownership against the bitmap) after every change. Cross-checked in the Alpine guest:
+the Alpine ISO has no exfatprogs, so the oracle is the kernel's exFAT driver (6.18), which
+verifies those checksums as it reads. It mounts SectorZero's exFAT floppy (with a FAT-chained,
+fragmented file), USB stick (MBR) and 300 MiB GPT disk, every file's md5 matches, s0's times,
+read-only attribute and labels show up, and the kernel logs no errors; SectorZero's check
+passes on the volumes after the kernel wrote to them, SectorZero reads the kernel's files and
+writes more, and the kernel reads those. `fsck.exfat` and Windows' `chkdsk` have not been run
+on them yet.
+
 Still to do, roughly in order: low-level formatting of physical floppies and drive wiping and
 duplication, batch mode, NTFS
-writing, exFAT, resizing partitioned disks, converting a boot floppy into a
+writing, resizing partitioned disks, converting a boot floppy into a
 bootable hard disk image, encrypted IMZ (proprietary), and the macOS and Android builds.

@@ -63,6 +63,7 @@ enum FsArg {
     Ext2,
     Ext3,
     Ext4,
+    Exfat,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -289,8 +290,8 @@ enum Cmd {
         spec: FormatSpec,
         #[arg(short, long)]
         label: Option<String>,
-        /// File system: FAT (12/16/32 from the size), ext2, ext3 (ext2 with a journal) or
-        /// ext4 (extents and metadata checksums; journaled from 2 MiB up).
+        /// File system: FAT (12/16/32 from the size), exFAT (1 MiB and up), ext2, ext3 (ext2
+        /// with a journal) or ext4 (extents and metadata checksums; journaled from 2 MiB up).
         #[arg(long = "fs", value_enum, default_value = "fat")]
         fs: FsArg,
         /// Partition table for a hard disk image (one partition at 1 MiB).
@@ -798,6 +799,7 @@ fn run(cli: Cli) -> Result<()> {
                     FsArg::Ext2 => FsKind::Ext2,
                     FsArg::Ext3 => FsKind::Ext3,
                     FsArg::Ext4 => FsKind::Ext4,
+                    FsArg::Exfat => FsKind::Exfat,
                 },
                 container: container.map(Into::into),
                 scheme: match table {
