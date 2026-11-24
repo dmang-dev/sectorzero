@@ -387,5 +387,7 @@ window.SZ_LOCALES['es'] = {
   "{name} is now encrypted": "{name} ahora está cifrado",
   "{name} is no longer encrypted": "{name} ya no está cifrado",
   "Encryption": "Cifrado",
-  "Password (AES)": "Contraseña (AES)"
+  "Password (AES)": "Contraseña (AES)",
+  "Yes": "Sí",
+  "No": "No"
 };

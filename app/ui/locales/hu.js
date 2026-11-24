@@ -387,5 +387,7 @@ window.SZ_LOCALES['hu'] = {
   "{name} is now encrypted": "{name} mostantól titkosított",
   "{name} is no longer encrypted": "{name} már nem titkosított",
   "Encryption": "Titkosítás",
-  "Password (AES)": "Jelszó (AES)"
+  "Password (AES)": "Jelszó (AES)",
+  "Yes": "Igen",
+  "No": "Nem"
 };

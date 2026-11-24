@@ -387,5 +387,7 @@ window.SZ_LOCALES['cs'] = {
   "{name} is now encrypted": "{name} je nyní šifrováno",
   "{name} is no longer encrypted": "{name} již není šifrováno",
   "Encryption": "Šifrování",
-  "Password (AES)": "Heslo (AES)"
+  "Password (AES)": "Heslo (AES)",
+  "Yes": "Ano",
+  "No": "Ne"
 };

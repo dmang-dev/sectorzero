@@ -387,5 +387,7 @@ window.SZ_LOCALES['zh-TW'] = {
   "{name} is now encrypted": "{name} 現已加密",
   "{name} is no longer encrypted": "{name} 已取消加密",
   "Encryption": "加密",
-  "Password (AES)": "密碼 (AES)"
+  "Password (AES)": "密碼 (AES)",
+  "Yes": "是",
+  "No": "否"
 };

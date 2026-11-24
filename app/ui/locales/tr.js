@@ -387,5 +387,7 @@ window.SZ_LOCALES['tr'] = {
   "{name} is now encrypted": "{name} artık şifrelenmiş",
   "{name} is no longer encrypted": "{name} artık şifrelenmiş değil",
   "Encryption": "Şifreleme",
-  "Password (AES)": "Parola (AES)"
+  "Password (AES)": "Parola (AES)",
+  "Yes": "Evet",
+  "No": "Hayır"
 };

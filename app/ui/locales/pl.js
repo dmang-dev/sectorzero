@@ -387,5 +387,7 @@ window.SZ_LOCALES['pl'] = {
   "{name} is now encrypted": "{name} jest teraz zaszyfrowany",
   "{name} is no longer encrypted": "{name} nie jest już zaszyfrowany",
   "Encryption": "Szyfrowanie",
-  "Password (AES)": "Hasło (AES)"
+  "Password (AES)": "Hasło (AES)",
+  "Yes": "Tak",
+  "No": "Nie"
 };

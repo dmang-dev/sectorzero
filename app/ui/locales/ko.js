@@ -387,5 +387,7 @@ window.SZ_LOCALES['ko'] = {
   "{name} is now encrypted": "{name}을(를) 암호화했습니다",
   "{name} is no longer encrypted": "{name}의 암호화를 해제했습니다",
   "Encryption": "암호화",
-  "Password (AES)": "암호(AES)"
+  "Password (AES)": "암호(AES)",
+  "Yes": "예",
+  "No": "아니요"
 };
