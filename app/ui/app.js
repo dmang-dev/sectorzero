@@ -294,7 +294,7 @@ function syncNewDialog() {
   geoEnable($('newGeo'), kind === 'custom');
   // Custom layouts are FAT boot sector parameters.
   $('newFsWrap').hidden = kind === 'custom';
-  const ext = kind !== 'custom' && $('newFs').value !== 'fat';
+  const ext = kind !== 'custom' && $('newFs').value.startsWith('ext');
   $('newLabel').maxLength = ext ? 16 : 11;
   $('newLabelText').textContent = t('Volume label (optional, up to {n} characters)', { n: ext ? 16 : 11 });
   const c = $('newContainer').value;
@@ -391,15 +391,16 @@ async function actionRename() {
 }
 
 async function actionLabel() {
+  const n = (state.image.info.fs_type || '').startsWith('ext') ? 16 : 11;
   const label = await askText(t('Volume label'), state.image.info.label, {
-    allowEmpty: true, hint: t('Up to 11 characters. Leave empty to remove the label.'),
+    allowEmpty: true, hint: t('Up to {n} characters. Leave empty to remove the label.', { n }),
   });
   if (label === null) return;
   const keep = state.image.path;
   state.image = await invoke('set_label', { label: label || null });
   state.image.path = keep;
   render();
-  setStatus(label ? t('Label set to {label}', { label: label.toUpperCase() }) : t('Label removed'));
+  setStatus(label ? t('Label set to {label}', { label: state.image.info.label || label }) : t('Label removed'));
 }
 
 function bootRows(b) {
@@ -639,11 +640,12 @@ const selectedEntries = () => state.entries.filter((e) => state.selected.has(e.p
 const toLocalInput = (s) => (s ? s.replace(' ', 'T') : '');
 
 // What the Properties dialog can change: FAT has four attributes and three times
-// (2-second modified steps, date-only access, 1980-2107); ext has read-only (the write
-// permission bits) and full times; anything else (NTFS, ISO, read-only images) is shown only.
+// (2-second modified steps, date-only access, 1980-2107); exFAT the same attributes and
+// full times (1980-2107); ext has read-only (the write permission bits) and full times;
+// anything else (NTFS, ISO, read-only images) is shown only.
 function propsMode() {
   const fs = state.image.info.fs_type || '';
-  const kind = fs.startsWith('FAT') ? 'fat' : fs.startsWith('ext') ? 'ext' : 'other';
+  const kind = fs.startsWith('FAT') ? 'fat' : fs === 'exFAT' ? 'exfat' : fs.startsWith('ext') ? 'ext' : 'other';
   return { kind, editable: writable() && kind !== 'other' };
 }
 
@@ -657,12 +659,12 @@ function setupPropsDialog(mode, items) {
       ? (k === 'hidden' ? t('Names starting with a dot are hidden on Linux') : t('ext has no such attribute'))
       : '';
   }
-  const range = fat ? ['1980-01-01', '2107-12-31'] : ['1902-01-01', '2446-12-31'];
+  const range = fat || mode.kind === 'exfat' ? ['1980-01-01', '2107-12-31'] : ['1902-01-01', '2446-12-31'];
   for (const id of ['propsModified', 'propsCreated', 'propsAccessed']) {
     const el = $(id);
     el.disabled = !mode.editable;
     if (id === 'propsAccessed') {
-      const withTime = !fat && items.some((e) => e.accessed.includes(' '));
+      const withTime = !fat && (mode.kind === 'exfat' || items.some((e) => e.accessed.includes(' ')));
       el.type = fat || (!ext && !withTime) ? 'date' : 'datetime-local';
       $('propsAccessedText').textContent = el.type === 'date' ? t('Accessed (date only)') : t('Accessed');
     }
@@ -680,7 +682,9 @@ function setupPropsDialog(mode, items) {
       : t('The image is open read-only; the values are shown for reference.'))
     : ext
       ? t('Only the fields you change are written. On ext, read-only removes the write permission bits (clearing it gives the owner write permission back); hidden, system and archive do not exist.')
-      : t('Only the fields you change are written. FAT stores modified times in 2-second steps.');
+      : mode.kind === 'exfat'
+        ? t('Only the fields you change are written. exFAT stores dates from 1980 to 2107.')
+        : t('Only the fields you change are written. FAT stores modified times in 2-second steps.');
 }
 
 async function actionProps() {

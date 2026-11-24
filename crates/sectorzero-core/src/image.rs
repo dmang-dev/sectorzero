@@ -155,21 +155,34 @@ impl Image {
 
     // --- volume label and boot sector -------------------------------------------------
 
-    /// Set or (with `None` / empty) remove the FAT volume label.
-    /// Whether the selected volume holds ext2/3/4.
-    fn is_ext(&self) -> Result<bool> {
+    /// The file system of the selected volume ("FAT", "exFAT", "ext4", …).
+    fn fs_name(&self) -> Result<Option<&'static str>> {
         if matches!(self.layout, Layout::Iso) {
-            return Ok(false);
+            return Ok(Some("ISO 9660"));
         }
         let mut head = vec![0u8; 2048];
         self.window().read_at(0, &mut head)?;
-        Ok(partition::fs_of(&head).is_some_and(|f| f.starts_with("ext")))
+        Ok(partition::fs_of(&head))
     }
 
+    /// Whether the selected volume holds ext2/3/4.
+    fn is_ext(&self) -> Result<bool> {
+        Ok(self.fs_name()?.is_some_and(|f| f.starts_with("ext")))
+    }
+
+    fn is_exfat(&self) -> Result<bool> {
+        Ok(self.fs_name()? == Some("exFAT"))
+    }
+
+    /// Set or (with `None` / empty) remove the volume label (FAT, exFAT, ext).
     pub fn set_label(&self, label: Option<&str>) -> Result<()> {
         self.require_writable()?;
         if self.is_ext()? {
             crate::ext::set_label(&mut self.window(), label)?;
+            return self.flush();
+        }
+        if self.is_exfat()? {
+            crate::exfat::ExFatFs::open(self.window(), true)?.set_label(label)?;
             return self.flush();
         }
         self.require_fat()?;
@@ -233,15 +246,22 @@ impl Image {
 
     // --- file properties ---------------------------------------------------------------
 
-    /// Change attributes and timestamps of a file or folder (with `recursive`, of everything
-    /// below it too). Returns how many entries changed.
-    /// Change attributes and times (see [`EntryEdit`]). FAT and ext: on ext, read-only is
-    /// the absence of write permission bits, and hidden / system / archive do not exist.
+    /// Change attributes and times (see [`EntryEdit`]) of a file or folder (with
+    /// `recursive`, of everything below it too). Returns how many entries changed. FAT,
+    /// exFAT and ext: on ext, read-only is the absence of write permission bits, and
+    /// hidden / system / archive do not exist.
     pub fn edit_entry(&self, path: &str, edit: &EntryEdit, recursive: bool) -> Result<u64> {
         self.require_writable()?;
         let path = crate::volume::norm(path)?;
         if self.is_ext()? {
             let fs = crate::ext::ExtFs::open(self.window(), true)?;
+            let n = fs.edit(&path, edit, recursive)?;
+            drop(fs);
+            self.flush()?;
+            return Ok(n);
+        }
+        if self.is_exfat()? {
+            let fs = crate::exfat::ExFatFs::open(self.window(), true)?;
             let n = fs.edit(&path, edit, recursive)?;
             drop(fs);
             self.flush()?;

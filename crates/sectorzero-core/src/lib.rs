@@ -12,6 +12,7 @@ mod checksum;
 mod container;
 mod device;
 mod error;
+mod exfat;
 mod ext;
 mod fatraw;
 mod format;
