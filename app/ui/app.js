@@ -7,16 +7,14 @@ const { getCurrentWebview } = window.__TAURI__.webview;
 
 const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk', 'imz', 'wlz', 'vhd', 'vud', 'vhdx', 'vmdk', 'vdi', 'qcow2', '001',
   'nhd', 'hdi', 'fdi', 'iso', 'cue', 'bin', 'nrg', 'mds', 'mdf'];
-const IMAGE_FILTERS = [
-  { name: 'Disk images', extensions: IMAGE_EXTS },
-  { name: 'All files', extensions: ['*'] },
-];
+const allFiles = () => ({ name: t('All files'), extensions: ['*'] });
+const imageFilters = () => [{ name: t('Disk images'), extensions: IMAGE_EXTS }, allFiles()];
 const CONTAINER_EXT = {
   raw: 'ima', imz: 'imz', vhd: 'vhd', vhdx: 'vhdx', vmdk: 'vmdk', vdi: 'vdi', qcow2: 'qcow2', nhd: 'nhd', hdi: 'hdi', fdi: 'fdi',
 };
 const DYNAMIC = ['vhd', 'vhdx', 'vmdk', 'vdi'];
 const filterFor = (container) => [
-  { name: container === 'raw' ? 'Raw image' : container.toUpperCase(), extensions: container === 'raw' ? ['ima', 'img', 'vfd', 'flp'] : [CONTAINER_EXT[container]] },
+  { name: container === 'raw' ? t('Raw image') : container.toUpperCase(), extensions: container === 'raw' ? ['ima', 'img', 'vfd', 'flp'] : [CONTAINER_EXT[container]] },
 ];
 
 const state = {
@@ -34,12 +32,15 @@ const $ = (id) => document.getElementById(id);
 
 // ---------- helpers ----------
 
-const fmtBytes = (n) => n.toLocaleString();
+const fmtBytes = (n) => n.toLocaleString(I18N.lang);
 const human = (n) => {
-  const u = ['bytes', 'KB', 'MB', 'GB', 'TB'];
-  let i = 0;
+  const u = [t('KB'), t('MB'), t('GB'), t('TB')];
+  let i = -1;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return i === 0 ? `${n} bytes` : `${n.toFixed(n < 10 ? 2 : 1)} ${u[i]}`;
+  if (i < 0) return t('{n} bytes', { n: fmtBytes(n) });
+  const digits = n < 10 ? 2 : 1;
+  const num = n.toLocaleString(I18N.lang, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return `${num} ${u[i]}`;
 };
 const join = (dir, name) => (dir ? `${dir}/${name}` : name);
 const parent = (dir) => dir.split('/').slice(0, -1).join('/');
@@ -49,9 +50,9 @@ const isImageName = (p) => IMAGE_EXTS.includes(baseName(p).split('.').pop().toLo
 const writable = () => !!state.image && state.image.info.fs_writable;
 
 function typeOf(e) {
-  if (e.is_dir) return 'Folder';
+  if (e.is_dir) return t('Folder');
   const dot = e.name.lastIndexOf('.');
-  return dot > 0 ? `${e.name.slice(dot + 1).toUpperCase()} file` : 'File';
+  return dot > 0 ? t('{ext} file', { ext: e.name.slice(dot + 1).toUpperCase() }) : t('File');
 }
 
 function setStatus(text, kind) {
@@ -61,25 +62,28 @@ function setStatus(text, kind) {
 
 function layoutName(i) {
   const l = i.layout;
-  if (l.kind === 'Mbr' || l.kind === 'Gpt') return `${l.kind.toUpperCase()}${i.partition ? `, partition ${i.partition.index} (${i.partition.type_name})` : ''}`;
-  if (l.kind === 'Iso') return 'CD/DVD image';
-  return 'Bare volume';
+  if (l.kind === 'Mbr' || l.kind === 'Gpt') {
+    const scheme = l.kind.toUpperCase();
+    return i.partition ? t('{scheme}, partition {n} ({type})', { scheme, n: i.partition.index, type: i.partition.type_name }) : scheme;
+  }
+  if (l.kind === 'Iso') return t('CD/DVD image');
+  return t('Bare volume');
 }
 
 function statusForImage() {
   if (!state.image) {
-    setStatus('No image');
+    setStatus(t('No image'));
     $('statusRight').textContent = '';
     return;
   }
   const i = state.image.info;
-  const what = i.floppy_format || `${i.fs_type} volume`;
-  const part = i.partition ? `, partition ${i.partition.index}` : '';
-  const ro = i.fs_writable ? '' : ' (read-only)';
-  setStatus(`${state.image.name} — ${what}${part}${i.label ? ` — ${i.label}` : ''}${ro}`);
+  const what = i.floppy_format || t('{fs} volume', { fs: i.fs_type });
+  const bits = [state.image.name, i.partition ? t('{what}, partition {n}', { what, n: i.partition.index }) : what];
+  if (i.label) bits.push(i.label);
+  setStatus(bits.join(' — ') + (i.fs_writable ? '' : ` (${t('read-only')})`));
   $('statusRight').textContent = i.iso
     ? human(i.total_bytes)
-    : `${human(i.free_bytes)} free of ${human(i.total_bytes)}`;
+    : t('{free} free of {total}', { free: human(i.free_bytes), total: human(i.total_bytes) });
 }
 
 async function showError(e) {
@@ -111,7 +115,7 @@ async function withOverwrite(fn) {
     return await fn(false);
   } catch (e) {
     if (e && e.kind === 'exists') {
-      const yes = await dialog.ask(`${e.message}\n\nOverwrite existing files?`, { title: 'SectorZero', kind: 'warning' });
+      const yes = await dialog.ask(`${e.message}\n\n${t('Overwrite existing files?')}`, { title: 'SectorZero', kind: 'warning' });
       if (yes) return fn(true);
       return null;
     }
@@ -168,7 +172,7 @@ function fillFormatSelect(sel, { withDisk = false, selected = '1440' } = {}) {
   if (withDisk) {
     const o = document.createElement('option');
     o.value = 'disk';
-    o.textContent = 'Hard disk / volume image (size below)';
+    o.textContent = t('Hard disk / volume image (size below)');
     sel.append(o);
   }
 }
@@ -209,7 +213,7 @@ async function closeImage() {
 // ---------- actions ----------
 
 async function actionOpen() {
-  const path = await dialog.open({ title: 'Open disk image', multiple: false, filters: IMAGE_FILTERS });
+  const path = await dialog.open({ title: t('Open disk image'), multiple: false, filters: imageFilters() });
   if (path) await openImage(path);
 }
 
@@ -217,10 +221,10 @@ async function actionOpen() {
 
 const hex = (n) => `0x${n.toString(16).toUpperCase().padStart(2, '0')}`;
 const parseNum = (s, dflt) => {
-  const t = String(s).trim();
-  if (!t) return dflt;
-  const n = t.toLowerCase().startsWith('0x') ? parseInt(t, 16) : Number(t);
-  if (!Number.isFinite(n)) throw new Error(`"${t}" is not a number.`);
+  s = String(s).trim();
+  if (!s) return dflt;
+  const n = s.toLowerCase().startsWith('0x') ? parseInt(s, 16) : Number(s);
+  if (!Number.isFinite(n)) throw new Error(t('"{text}" is not a number.', { text: s }));
   return n;
 };
 
@@ -240,8 +244,8 @@ function geoInit(box) {
   box.querySelector('[data-geo-like]').onclick = async () => {
     try {
       const p = await dialog.open({
-        title: 'Copy the layout of', multiple: false,
-        filters: [{ name: 'Images and boot sectors', extensions: [...IMAGE_EXTS, 'bin', 'bs'] }, { name: 'All files', extensions: ['*'] }],
+        title: t('Copy the layout of'), multiple: false,
+        filters: [{ name: t('Images and boot sectors'), extensions: [...IMAGE_EXTS, 'bin', 'bs'] }, allFiles()],
       });
       if (p) geoFill(box, await invoke('geometry_of', { path: p }));
     } catch (e) {
@@ -292,7 +296,7 @@ function syncNewDialog() {
   $('newFsWrap').hidden = kind === 'custom';
   const ext = kind !== 'custom' && $('newFs').value !== 'fat';
   $('newLabel').maxLength = ext ? 16 : 11;
-  $('newLabelText').textContent = `Volume label (optional, up to ${ext ? 16 : 11} characters)`;
+  $('newLabelText').textContent = t('Volume label (optional, up to {n} characters)', { n: ext ? 16 : 11 });
   const c = $('newContainer').value;
   $('newDynamic').disabled = !DYNAMIC.includes(c);
 }
@@ -307,7 +311,7 @@ async function actionNew() {
   const geometry = kind === 'custom' ? geoRead($('newGeo')) : null;
   const container = $('newContainer').value;
   const ext = CONTAINER_EXT[container] === 'ima' && kind !== 'floppy' ? 'img' : CONTAINER_EXT[container];
-  const path = await dialog.save({ title: 'Save new image as', defaultPath: `disk.${ext}`, filters: filterFor(container) });
+  const path = await dialog.save({ title: t('Save new image as'), defaultPath: `disk.${ext}`, filters: filterFor(container) });
   if (!path) return;
   const spec = {
     path,
@@ -331,45 +335,45 @@ async function injectPaths(paths) {
   const stats = await withOverwrite((overwrite) => invoke('inject', { paths, dest: state.dir, overwrite }));
   await refreshInfo();
   await refresh(true);
-  if (stats) setStatus(`Injected ${stats.files} file(s), ${stats.dirs} folder(s), ${fmtBytes(stats.bytes)} bytes`);
+  if (stats) setStatus(t('Injected {files} file(s), {dirs} folder(s), {bytes} bytes', { files: stats.files, dirs: stats.dirs, bytes: fmtBytes(stats.bytes) }));
 }
 
 async function actionInject() {
-  const paths = await dialog.open({ title: 'Files to inject', multiple: true });
+  const paths = await dialog.open({ title: t('Files to inject'), multiple: true });
   if (paths) await injectPaths(Array.isArray(paths) ? paths : [paths]);
 }
 
 async function actionInjectDir() {
-  const path = await dialog.open({ title: 'Folder to inject', directory: true, multiple: false });
+  const path = await dialog.open({ title: t('Folder to inject'), directory: true, multiple: false });
   if (path) await injectPaths([path]);
 }
 
 async function actionExtract() {
-  const dest = await dialog.open({ title: 'Extract to folder', directory: true, multiple: false });
+  const dest = await dialog.open({ title: t('Extract to folder'), directory: true, multiple: false });
   if (!dest) return;
   // Nothing selected: extract the current folder's contents (the whole image at the root).
   const paths = state.selected.size ? [...state.selected] : state.entries.map((e) => e.path);
   const all = state.dir === '' && state.selected.size === 0;
   const stats = await withOverwrite((overwrite) => invoke('extract', { paths: all ? [] : paths, dest, overwrite }));
-  if (stats) setStatus(`Extracted ${stats.files} file(s), ${stats.dirs} folder(s), ${fmtBytes(stats.bytes)} bytes to ${dest}`);
+  if (stats) setStatus(t('Extracted {files} file(s), {dirs} folder(s), {bytes} bytes to {dest}', { files: stats.files, dirs: stats.dirs, bytes: fmtBytes(stats.bytes), dest }));
 }
 
 async function actionDelete() {
   if (!state.selected.size) return;
   const items = [...state.selected];
-  const label = items.length === 1 ? `"${baseName(items[0])}"` : `${items.length} items`;
-  const yes = await dialog.ask(`Delete ${label} from the image? Folders are deleted with everything in them.`, {
-    title: 'Delete', kind: 'warning',
+  const what = items.length === 1 ? `"${baseName(items[0])}"` : t('{n} items', { n: items.length });
+  const yes = await dialog.ask(t('Delete {what} from the image? Folders are deleted with everything in them.', { what }), {
+    title: t('Delete'), kind: 'warning',
   });
   if (!yes) return;
   const stats = await invoke('delete', { paths: items });
   await refreshInfo();
   await refresh();
-  setStatus(`Deleted ${stats.files} file(s), ${stats.dirs} folder(s)`);
+  setStatus(t('Deleted {files} file(s), {dirs} folder(s)', { files: stats.files, dirs: stats.dirs }));
 }
 
 async function actionMkdir() {
-  const name = await askText('New folder name');
+  const name = await askText(t('New folder name'));
   if (!name) return;
   await invoke('make_dir', { path: join(state.dir, name) });
   await refresh(true);
@@ -378,7 +382,7 @@ async function actionMkdir() {
 async function actionRename() {
   if (state.selected.size !== 1) return;
   const from = [...state.selected][0];
-  const name = await askText('Rename to', baseName(from));
+  const name = await askText(t('Rename to'), baseName(from));
   if (!name || name === baseName(from)) return;
   await invoke('rename', { from, to: join(state.dir, name) });
   await refresh();
@@ -387,32 +391,32 @@ async function actionRename() {
 }
 
 async function actionLabel() {
-  const label = await askText('Volume label', state.image.info.label, {
-    allowEmpty: true, hint: 'Up to 11 characters. Leave empty to remove the label.',
+  const label = await askText(t('Volume label'), state.image.info.label, {
+    allowEmpty: true, hint: t('Up to 11 characters. Leave empty to remove the label.'),
   });
   if (label === null) return;
   const keep = state.image.path;
   state.image = await invoke('set_label', { label: label || null });
   state.image.path = keep;
   render();
-  setStatus(label ? `Label set to ${label.toUpperCase()}` : 'Label removed');
+  setStatus(label ? t('Label set to {label}', { label: label.toUpperCase() }) : t('Label removed'));
 }
 
 function bootRows(b) {
   return [
-    ['File system', b.fat_type],
-    ['Jump', b.jump],
-    ['Bytes per sector', b.bytes_per_sector],
-    ['Sectors per cluster', b.sectors_per_cluster],
-    ['Reserved sectors', b.reserved_sectors],
-    ['FATs', b.fats],
-    ['Root entries', b.root_entries],
-    ['Total sectors', fmtBytes(b.total_sectors)],
-    ['Media', b.media],
-    ['Sectors per FAT', b.sectors_per_fat],
-    ['Label (boot sector)', b.label ?? '—'],
-    ['FS type field', b.fs_type ?? '—'],
-    ['Boot code', `${b.has_boot_code ? 'present' : 'none'}${b.signature_55aa ? '' : ', no 55AA signature'}`],
+    [t('File system'), b.fat_type],
+    [t('Jump'), b.jump],
+    [t('Bytes per sector'), b.bytes_per_sector],
+    [t('Sectors per cluster'), b.sectors_per_cluster],
+    [t('Reserved sectors'), b.reserved_sectors],
+    [t('FATs'), b.fats],
+    [t('Root entries'), b.root_entries],
+    [t('Total sectors'), fmtBytes(b.total_sectors)],
+    [t('Media'), b.media],
+    [t('Sectors per FAT'), b.sectors_per_fat],
+    [t('Label (boot sector)'), b.label ?? '—'],
+    [t('FS type field'), b.fs_type ?? '—'],
+    [t('Boot code'), (b.has_boot_code ? t('present') : t('none')) + (b.signature_55aa ? '' : `, ${t('no 55AA signature')}`)],
   ].map(([k, v]) => [k, String(v)]);
 }
 
@@ -433,11 +437,11 @@ async function actionBoot() {
     fillBootForm(b);
     const v = await showDialog($('bootDlg'));
     if (v === 'export') {
-      const dest = await dialog.save({ title: 'Save boot sector', defaultPath: `${stem(state.image.name)}.bin`, filters: [{ name: 'Boot sector', extensions: ['bin', 'bs'] }] });
-      if (dest) { await invoke('export_boot', { dest }); setStatus(`Boot sector saved to ${dest}`); }
+      const dest = await dialog.save({ title: t('Save boot sector'), defaultPath: `${stem(state.image.name)}.bin`, filters: [{ name: t('Boot sector'), extensions: ['bin', 'bs'] }] });
+      if (dest) { await invoke('export_boot', { dest }); setStatus(t('Boot sector saved to {dest}', { dest })); }
     } else if (v === 'import') {
-      const src = await dialog.open({ title: 'Boot sector file', multiple: false, filters: [{ name: 'Boot sector', extensions: ['bin', 'bs', 'ima', 'img'] }, { name: 'All files', extensions: ['*'] }] });
-      if (src) { b = await invoke('import_boot', { src }); setStatus('Boot code imported (disk geometry kept)'); }
+      const src = await dialog.open({ title: t('Boot sector file'), multiple: false, filters: [{ name: t('Boot sector'), extensions: ['bin', 'bs', 'ima', 'img'] }, allFiles()] });
+      if (src) { b = await invoke('import_boot', { src }); setStatus(t('Boot code imported (disk geometry kept)')); }
     } else if (v === 'save') {
       const num = (id) => ($(id).value === '' ? null : Number($(id).value));
       const drive = $('bootDrive').value.trim();
@@ -452,7 +456,7 @@ async function actionBoot() {
       b = await invoke('edit_boot', { edit });
       await refreshInfo();
       render();
-      setStatus('Boot sector saved');
+      setStatus(t('Boot sector saved'));
       return;
     } else {
       return;
@@ -462,26 +466,26 @@ async function actionBoot() {
 
 function defragRows(r, analysed) {
   const rows = [
-    ['Files / folders', `${r.files} / ${r.dirs}`],
-    ['Fragmented', `${r.fragmented} (${r.fragments} extents)`],
-    ['Used clusters', fmtBytes(r.used_clusters)],
-    ['Free clusters', fmtBytes(r.free_clusters)],
-    ['Cluster size', `${fmtBytes(r.cluster_size)} bytes`],
+    [t('Files / folders'), `${r.files} / ${r.dirs}`],
+    [t('Fragmented'), t('{n} ({extents} extents)', { n: r.fragmented, extents: r.fragments })],
+    [t('Used clusters'), fmtBytes(r.used_clusters)],
+    [t('Free clusters'), fmtBytes(r.free_clusters)],
+    [t('Cluster size'), t('{n} bytes', { n: fmtBytes(r.cluster_size) })],
   ];
-  if (r.lost_clusters) rows.push(['Lost clusters', `${r.lost_clusters} (will be freed)`]);
-  if (!analysed) rows.push(['Moved', `${fmtBytes(r.moved_clusters)} clusters`]);
+  if (r.lost_clusters) rows.push([t('Lost clusters'), t('{n} (will be freed)', { n: r.lost_clusters })]);
+  if (!analysed) rows.push([t('Moved'), t('{n} clusters', { n: fmtBytes(r.moved_clusters) })]);
   return rows;
 }
 
 async function actionDefrag() {
   const r = await invoke('defrag', { analyze: true, zeroFree: false });
   fillList($('defragList'), defragRows(r, true));
-  $('defragGo').textContent = r.fragmented ? 'Defragment' : 'Defragment anyway';
+  $('defragGo').textContent = r.fragmented ? t('Defragment') : t('Defragment anyway');
   if (await showDialog($('defragDlg')) !== 'ok') return;
   const done = await invoke('defrag', { analyze: false, zeroFree: $('defragZero').checked });
   await refreshInfo();
   await refresh(true);
-  setStatus(`Defragmented: ${done.moved_clusters} cluster(s) moved, ${done.fragments} extent(s) now`);
+  setStatus(t('Defragmented: {moved} cluster(s) moved, {extents} extent(s) now', { moved: done.moved_clusters, extents: done.fragments }));
 }
 
 async function actionFormat() {
@@ -489,7 +493,7 @@ async function actionFormat() {
   fillFormatSelect($('formatSel'), { withDisk: true, selected: '' });
   const o = document.createElement('option');
   o.value = 'custom';
-  o.textContent = 'Custom layout (below)';
+  o.textContent = t('Custom layout (below)');
   $('formatSel').append(o);
   geoInit($('formatGeo'));
   try { geoFill($('formatGeo'), await invoke('geometry_of', { path: null })); } catch { /* keep defaults */ }
@@ -514,112 +518,118 @@ async function actionFormat() {
   state.image.path = keep;
   state.dir = '';
   await refresh();
-  setStatus(`Changed format to ${state.image.info.floppy_format || human(state.image.info.volume_size)}`);
+  setStatus(t('Changed format to {format}', { format: state.image.info.floppy_format || human(state.image.info.volume_size) }));
 }
 
 async function actionSaveAs() {
-  $('saveAsTitle').textContent = 'Save a copy as';
+  $('saveAsTitle').textContent = t('Save a copy as');
   const sync = () => { $('saveDynamic').disabled = !DYNAMIC.includes($('saveContainer').value); };
   $('saveContainer').onchange = sync;
   sync();
   if (await showDialog($('saveAsDlg')) !== 'ok') return;
   const container = $('saveContainer').value;
-  const dest = await dialog.save({ title: 'Save a copy as', defaultPath: `${stem(state.image.name)}.${CONTAINER_EXT[container]}`, filters: filterFor(container) });
+  const dest = await dialog.save({ title: t('Save a copy as'), defaultPath: `${stem(state.image.name)}.${CONTAINER_EXT[container]}`, filters: filterFor(container) });
   if (!dest) return;
   const r = await invoke('save_as', { dest, container, dynamic: !$('saveDynamic').disabled && $('saveDynamic').checked });
-  setStatus(`Saved ${baseName(dest)} (${human(r.bytes)}, ${human(r.stored)} of data)`);
-  const open = await dialog.ask(`Saved ${baseName(dest)}. Open it now?`, { title: 'Save as', kind: 'info' });
+  setStatus(t('Saved {name} ({size}, {stored} of data)', { name: baseName(dest), size: human(r.bytes), stored: human(r.stored) }));
+  const open = await dialog.ask(t('Saved {name}. Open it now?', { name: baseName(dest) }), { title: t('Save as'), kind: 'info' });
   if (open) await openImage(dest);
 }
 
 async function actionIso() {
   $('isoBootPick').onclick = async () => {
-    const p = await dialog.open({ title: 'Boot image', multiple: false, filters: [{ name: 'Boot images', extensions: ['ima', 'img', 'bin', 'efi'] }, { name: 'All files', extensions: ['*'] }] });
+    const p = await dialog.open({ title: t('Boot image'), multiple: false, filters: [{ name: t('Boot images'), extensions: ['ima', 'img', 'bin', 'efi'] }, allFiles()] });
     if (p) $('isoBoot').value = p;
   };
   $('isoBootClear').onclick = () => { $('isoBoot').value = ''; };
   if (await showDialog($('isoDlg')) !== 'ok') return;
-  const folder = await dialog.open({ title: 'Folder to put on the CD', directory: true, multiple: false });
+  const folder = await dialog.open({ title: t('Folder to put on the CD'), directory: true, multiple: false });
   if (!folder) return;
-  const dest = await dialog.save({ title: 'Save ISO image as', defaultPath: `${baseName(folder) || 'cd'}.iso`, filters: [{ name: 'ISO image', extensions: ['iso'] }] });
+  const dest = await dialog.save({ title: t('Save ISO image as'), defaultPath: `${baseName(folder) || 'cd'}.iso`, filters: [{ name: t('ISO image'), extensions: ['iso'] }] });
   if (!dest) return;
   const r = await invoke('make_iso', {
     folder, dest, label: $('isoLabel').value, boot: $('isoBoot').value || null, efi: $('isoEfi').checked,
   });
-  setStatus(`Built ${baseName(dest)}: ${r.files} file(s), ${human(r.image_size)}${r.bootable ? ', bootable' : ''}`);
-  const open = await dialog.ask(`Built ${baseName(dest)}. Open it now?`, { title: 'Build ISO', kind: 'info' });
+  setStatus(t('Built {name}: {files} file(s), {size}', { name: baseName(dest), files: r.files, size: human(r.image_size) }) + (r.bootable ? `, ${t('bootable')}` : ''));
+  const open = await dialog.ask(t('Built {name}. Open it now?', { name: baseName(dest) }), { title: t('Build ISO'), kind: 'info' });
   if (open) await openImage(dest);
 }
 
 async function actionBootImage() {
   const entries = state.image.info.iso?.boot_entries ?? [];
   if (!entries.length) {
-    await dialog.message('This ISO has no El Torito boot catalog.', { title: 'Boot image' });
+    await dialog.message(t('This ISO has no El Torito boot catalog.'), { title: t('Boot image') });
     return;
   }
   let entry = entries[0];
   if (entries.length > 1) {
     const list = entries.map((e) => `${e.index}: ${e.platform}, ${e.media}, ${human(e.image_size)}`).join('\n');
-    const n = await askText('Boot entry number', '1', { hint: list });
+    const n = await askText(t('Boot entry number'), '1', { hint: list });
     if (!n) return;
     entry = entries.find((e) => e.index === Number(n));
-    if (!entry) throw new Error(`There is no boot entry ${n}.`);
+    if (!entry) throw new Error(t('There is no boot entry {n}.', { n }));
   }
   const floppy = entry.media.includes('floppy');
-  const dest = await dialog.save({ title: 'Save boot image', defaultPath: `${stem(state.image.name)}-boot.${floppy ? 'ima' : 'img'}` });
+  const dest = await dialog.save({ title: t('Save boot image'), defaultPath: `${stem(state.image.name)}-boot.${floppy ? 'ima' : 'img'}` });
   if (!dest) return;
   const n = await invoke('export_boot_image', { entry: entry.index, dest });
-  setStatus(`Boot image saved to ${dest} (${fmtBytes(n)} bytes)`);
+  setStatus(t('Boot image saved to {dest} ({bytes} bytes)', { dest, bytes: fmtBytes(n) }));
 }
 
 async function actionDiff() {
   const dest = await dialog.save({
-    title: 'Create a differencing disk', defaultPath: `${stem(state.image.name)}-changes.vhd`,
-    filters: [{ name: 'Differencing VHD', extensions: ['vhd'] }, { name: 'Virtual PC undo disk', extensions: ['vud'] }],
+    title: t('Create a differencing disk'), defaultPath: `${stem(state.image.name)}-changes.vhd`,
+    filters: [{ name: t('Differencing VHD'), extensions: ['vhd'] }, { name: t('Virtual PC undo disk'), extensions: ['vud'] }],
   });
   if (!dest) return;
   state.image = await invoke('make_differencing', { dest });
   state.partition = null;
   state.dir = '';
   await refresh();
-  setStatus(`Created ${baseName(dest)}; changes now go there and ${baseName(state.image.info.container.parent || 'the parent')} stays as it is`);
+  const parentName = state.image.info.container.parent ? baseName(state.image.info.container.parent) : t('the parent');
+  setStatus(t('Created {name}; changes now go there and {parent} stays as it is', { name: baseName(dest), parent: parentName }));
 }
 
 async function actionInfo() {
   await refreshInfo();
   const i = state.image.info;
   const c = i.container;
+  const bytes = (n) => t('{n} bytes', { n: fmtBytes(n) });
+  const none = t('(none)');
   const rows = [
-    ['File', state.image.path],
-    ['Container', `${c.kind.toUpperCase()} (${c.variant})${c.member ? `, member ${c.member}` : ''}`],
-    ['Disk size', `${fmtBytes(c.virtual_size)} bytes`],
-    ['Layout', layoutName(i)],
-    ['File system', i.fs_type + (i.fs_writable ? '' : ' (read-only)')],
+    [t('File'), state.image.path],
+    [t('Container'), `${c.kind.toUpperCase()} (${c.variant})${c.member ? `, ${t('member {name}', { name: c.member })}` : ''}`],
+    [t('Disk size'), bytes(c.virtual_size)],
+    [t('Layout'), layoutName(i)],
+    [t('File system'), i.fs_type + (i.fs_writable ? '' : ` (${t('read-only')})`)],
   ];
-  if (i.read_only_reason) rows.push(['Read-only because', i.read_only_reason]);
-  if (c.comment) rows.push(['Comment', c.comment]);
-  if (c.parent) rows.push(['Parent', c.parent]);
+  if (i.read_only_reason) rows.push([t('Read-only because'), i.read_only_reason]);
+  if (c.comment) rows.push([t('Comment'), c.comment]);
+  if (c.parent) rows.push([t('Parent'), c.parent]);
   if (i.iso) {
-    rows.push(['Volume ID', i.label || '(none)']);
-    if (i.iso.application) rows.push(['Application', i.iso.application]);
-    if (i.iso.publisher) rows.push(['Publisher', i.iso.publisher]);
-    if (i.iso.created) rows.push(['Created', i.iso.created]);
-    rows.push(['Size', `${fmtBytes(i.total_bytes)} bytes`]);
-    for (const b of i.iso.boot_entries) rows.push([`Boot entry ${b.index}`, `${b.platform}, ${b.media}, ${fmtBytes(b.image_size)} bytes`]);
+    rows.push([t('Volume ID'), i.label || none]);
+    if (i.iso.application) rows.push([t('Application'), i.iso.application]);
+    if (i.iso.publisher) rows.push([t('Publisher'), i.iso.publisher]);
+    if (i.iso.created) rows.push([t('Created'), i.iso.created]);
+    rows.push([t('Size'), bytes(i.total_bytes)]);
+    for (const b of i.iso.boot_entries) rows.push([t('Boot entry {n}', { n: b.index }), `${b.platform}, ${b.media}, ${bytes(b.image_size)}`]);
   } else {
     rows.push(
-      ['Format', i.floppy_format || '—'],
-      ['Label', i.label || '(none)'],
-      [i.fs_type.startsWith('ext') ? 'UUID' : 'Serial number', i.volume_id],
-      ['OEM name', i.oem_name || '—'],
-      ['Sector size', `${i.bytes_per_sector} bytes`],
-      ['Cluster size', `${fmtBytes(i.cluster_size)} bytes`],
-      ['Capacity', `${fmtBytes(i.total_bytes)} bytes (${fmtBytes(i.total_clusters)} clusters)`],
-      ['Free', `${fmtBytes(i.free_bytes)} bytes (${fmtBytes(i.free_clusters)} clusters)`],
+      [t('Format'), i.floppy_format || '—'],
+      [t('Label'), i.label || none],
+      [i.fs_type.startsWith('ext') ? 'UUID' : t('Serial number'), i.volume_id],
+      [t('OEM name'), i.oem_name || '—'],
+      [t('Sector size'), bytes(i.bytes_per_sector)],
+      [t('Cluster size'), bytes(i.cluster_size)],
+      [t('Capacity'), t('{bytes} ({clusters} clusters)', { bytes: bytes(i.total_bytes), clusters: fmtBytes(i.total_clusters) })],
+      [t('Free'), t('{bytes} ({clusters} clusters)', { bytes: bytes(i.free_bytes), clusters: fmtBytes(i.free_clusters) })],
     );
   }
   for (const p of i.layout.partitions ?? []) {
-    rows.push([`Partition ${p.index}`, `${p.type_name}${p.name ? ` "${p.name}"` : ''}, ${human(p.sectors * p.sector_size)} at sector ${fmtBytes(p.start_lba)}, ${p.fs ?? 'no known file system'}`]);
+    const type = `${p.type_name}${p.name ? ` "${p.name}"` : ''}`;
+    rows.push([t('Partition {n}', { n: p.index }), t('{type}, {size} at sector {start}, {fs}', {
+      type, size: human(p.sectors * p.sector_size), start: fmtBytes(p.start_lba), fs: p.fs ?? t('no known file system'),
+    })]);
   }
   fillList($('infoList'), rows);
   $('infoDlg').showModal();
@@ -644,7 +654,7 @@ function setupPropsDialog(mode, items) {
     const k = box.dataset.attr;
     box.disabled = !mode.editable || (ext && k !== 'read_only');
     box.parentElement.title = ext && k !== 'read_only'
-      ? (k === 'hidden' ? 'Names starting with a dot are hidden on Linux' : 'ext has no such attribute')
+      ? (k === 'hidden' ? t('Names starting with a dot are hidden on Linux') : t('ext has no such attribute'))
       : '';
   }
   const range = fat ? ['1980-01-01', '2107-12-31'] : ['1902-01-01', '2446-12-31'];
@@ -654,7 +664,7 @@ function setupPropsDialog(mode, items) {
     if (id === 'propsAccessed') {
       const withTime = !fat && items.some((e) => e.accessed.includes(' '));
       el.type = fat || (!ext && !withTime) ? 'date' : 'datetime-local';
-      $('propsAccessedText').textContent = el.type === 'date' ? 'Accessed (date only)' : 'Accessed';
+      $('propsAccessedText').textContent = el.type === 'date' ? t('Accessed (date only)') : t('Accessed');
     }
     const time = el.type === 'datetime-local';
     el.min = range[0] + (time ? 'T00:00' : '');
@@ -663,14 +673,14 @@ function setupPropsDialog(mode, items) {
   }
   $('propsRecursive').disabled = !mode.editable;
   $('propsApply').hidden = !mode.editable;
-  $('propsCancel').textContent = mode.editable ? 'Cancel' : 'Close';
+  $('propsCancel').textContent = mode.editable ? t('Cancel') : t('Close');
   $('propsNote').textContent = !mode.editable
     ? (writable() || mode.kind === 'other'
-      ? `${state.image.info.fs_type} volumes are read-only here; the values are shown for reference.`
-      : 'The image is open read-only; the values are shown for reference.')
+      ? t('{fs} volumes are read-only here; the values are shown for reference.', { fs: state.image.info.fs_type })
+      : t('The image is open read-only; the values are shown for reference.'))
     : ext
-      ? 'Only the fields you change are written. On ext, read-only removes the write permission bits (clearing it gives the owner write permission back); hidden, system and archive do not exist.'
-      : 'Only the fields you change are written. FAT stores modified times in 2-second steps.';
+      ? t('Only the fields you change are written. On ext, read-only removes the write permission bits (clearing it gives the owner write permission back); hidden, system and archive do not exist.')
+      : t('Only the fields you change are written. FAT stores modified times in 2-second steps.');
 }
 
 async function actionProps() {
@@ -679,10 +689,11 @@ async function actionProps() {
   const mode = propsMode();
   setupPropsDialog(mode, items);
   const one = items.length === 1 ? items[0] : null;
-  $('propsTitle').textContent = one ? `Properties of ${one.name}` : `Properties of ${items.length} items`;
+  $('propsTitle').textContent = one ? t('Properties of {name}', { name: one.name }) : t('Properties of {n} items', { n: items.length });
   $('propsHint').textContent = one
-    ? `${one.is_dir ? 'Folder' : `${fmtBytes(one.size)} bytes`}${one.short_name && one.short_name !== one.name ? ` — short name ${one.short_name}` : ''}`
-    : 'Mixed values are shown as a dash; leave them alone to keep each item as it is.';
+    ? (one.is_dir ? t('Folder') : t('{n} bytes', { n: fmtBytes(one.size) }))
+      + (one.short_name && one.short_name !== one.name ? ` — ${t('short name {name}', { name: one.short_name })}` : '')
+    : t('Mixed values are shown as a dash; leave them alone to keep each item as it is.');
   const touched = new Set();
   for (const box of document.querySelectorAll('#propsAttrs input')) {
     const k = box.dataset.attr;
@@ -713,14 +724,14 @@ async function actionProps() {
   if (!Object.keys(edit).length) return;
   const n = await invoke('edit_entries', { paths: items.map((e) => e.path), edit, recursive });
   await refresh(true);
-  setStatus(`Updated ${n} item(s)`);
+  setStatus(t('Updated {n} item(s)', { n }));
 }
 
 async function actionChecksum() {
   const file = selectedEntries().length === 1 && !selectedEntries()[0].is_dir ? selectedEntries()[0] : null;
   const fileOpt = $('sumWhat').querySelector('option[value="file"]');
   fileOpt.disabled = !file;
-  fileOpt.textContent = file ? `The selected file (${file.name})` : 'The selected file (select one file first)';
+  fileOpt.textContent = file ? t('The selected file ({name})', { name: file.name }) : t('The selected file (select one file first)');
   if (!file && $('sumWhat').value === 'file') $('sumWhat').value = 'disk';
   let last = null;
   const clear = () => { fillList($('sumList'), []); last = null; $('sumCopy').disabled = true; };
@@ -729,15 +740,15 @@ async function actionChecksum() {
   $('sumCompute').onclick = async () => {
     const what = $('sumWhat').value;
     $('sumCompute').disabled = true;
-    setStatus('Computing checksums…');
+    setStatus(t('Computing checksums…'));
     try {
       last = await invoke('checksum', { what, path: what === 'file' ? file.path : null });
       fillList($('sumList'), [
-        ['Bytes', fmtBytes(last.bytes)], ['CRC-32', last.crc32], ['Adler-32', last.adler32],
+        [t('Bytes'), fmtBytes(last.bytes)], ['CRC-32', last.crc32], ['Adler-32', last.adler32],
         ['MD5', last.md5], ['SHA-1', last.sha1], ['SHA-256', last.sha256],
       ]);
       $('sumCopy').disabled = false;
-      setStatus('Checksums computed');
+      setStatus(t('Checksums computed'));
     } catch (e) {
       setStatus(e && e.message ? e.message : String(e), 'error');
     } finally {
@@ -747,7 +758,7 @@ async function actionChecksum() {
   $('sumCopy').onclick = async () => {
     if (!last) return;
     const text = ['bytes', 'crc32', 'adler32', 'md5', 'sha1', 'sha256'].map((k) => `${k} ${last[k]}`).join('\n');
-    try { await navigator.clipboard.writeText(`${text}\n`); setStatus('Checksums copied'); } catch { setStatus('Could not use the clipboard', 'error'); }
+    try { await navigator.clipboard.writeText(`${text}\n`); setStatus(t('Checksums copied')); } catch { setStatus(t('Could not use the clipboard'), 'error'); }
   };
   await showDialog($('sumDlg'));
 }
@@ -755,54 +766,55 @@ async function actionChecksum() {
 async function actionListing() {
   const where = state.dir ? `-${baseName(state.dir)}` : '';
   const dest = await dialog.save({
-    title: 'Export file list', defaultPath: `${stem(state.image.name)}${where}.html`,
-    filters: [{ name: 'Web page', extensions: ['html'] }, { name: 'Text', extensions: ['txt'] }, { name: 'CSV (spreadsheet)', extensions: ['csv'] }],
+    title: t('Export file list'), defaultPath: `${stem(state.image.name)}${where}.html`,
+    filters: [{ name: t('Web page'), extensions: ['html'] }, { name: t('Text'), extensions: ['txt'] }, { name: t('CSV (spreadsheet)'), extensions: ['csv'] }],
   });
   if (!dest) return;
   const ext = dest.split('.').pop().toLowerCase();
   const format = ext === 'csv' ? 'csv' : ext === 'txt' ? 'text' : 'html';
   const n = await invoke('export_listing', { dest, format, dir: state.dir });
-  setStatus(`Listed ${n} item(s) in ${dest}`);
+  setStatus(t('Listed {n} item(s) in {dest}', { n, dest }));
 }
 
 async function actionTruncate() {
   const yes = await dialog.ask(
-    'Cut the unused space off the end of this image file? Every file stays where it is; the image just stops after the last used cluster. '
-    + 'It still opens here and grows again when files are added, but some tools and emulators expect the full size.',
-    { title: 'Truncate unused space', kind: 'warning' },
+    t('Cut the unused space off the end of this image file? Every file stays where it is; the image just stops after the last used cluster. It still opens here and grows again when files are added, but some tools and emulators expect the full size.'),
+    { title: t('Truncate unused space'), kind: 'warning' },
   );
   if (!yes) return;
   const r = await invoke('truncate');
   await refreshInfo();
   render();
-  setStatus(r.new_size === r.old_size ? 'Nothing to cut: the last cluster is in use'
-    : `Truncated ${human(r.old_size)} → ${human(r.new_size)}`);
+  setStatus(r.new_size === r.old_size ? t('Nothing to cut: the last cluster is in use')
+    : t('Truncated {old} → {new}', { old: human(r.old_size), new: human(r.new_size) }));
 }
 
 async function actionIsoReplace() {
   const items = selectedEntries();
   if (items.length !== 1 || items[0].is_dir) {
-    await dialog.message('Select one file on the CD image first.', { title: 'Replace file' });
+    await dialog.message(t('Select one file on the CD image first.'), { title: t('Replace file') });
     return;
   }
   const target = items[0];
-  const src = await dialog.open({ title: `Replace ${target.name} with`, multiple: false });
+  const src = await dialog.open({ title: t('Replace {name} with', { name: target.name }), multiple: false });
   if (!src) return;
   const yes = await dialog.ask(
-    `Overwrite ${target.name} on ${state.image.name} with ${baseName(src)}? The new file must fit in the space the old one takes (${fmtBytes(Math.ceil(target.size / 2048) * 2048)} bytes). This changes the image file directly.`,
-    { title: 'Replace file', kind: 'warning' },
+    t('Overwrite {name} on {image} with {file}? The new file must fit in the space the old one takes ({bytes} bytes). This changes the image file directly.', {
+      name: target.name, image: state.image.name, file: baseName(src), bytes: fmtBytes(Math.ceil(target.size / 2048) * 2048),
+    }),
+    { title: t('Replace file'), kind: 'warning' },
   );
   if (!yes) return;
   await invoke('iso_replace', { path: target.path, src });
   await refresh(true);
-  setStatus(`Replaced ${target.name}`);
+  setStatus(t('Replaced {name}', { name: target.name }));
 }
 
 // Double-click or Enter on a file: copy it out to a temporary folder and open it.
 async function openEntry(e) {
-  setStatus(`Opening ${e.name}…`);
+  setStatus(t('Opening {name}…', { name: e.name }));
   await invoke('open_entry', { path: e.path });
-  setStatus(`Opened a copy of ${e.name} (changes are not saved into the image)`);
+  setStatus(t('Opened a copy of {name} (changes are not saved into the image)', { name: e.name }));
 }
 
 // Drag rows out to Explorer / the desktop: files are copied out first, then a native drag starts.
@@ -810,11 +822,11 @@ const drag = { start: null, active: false };
 
 async function dragOut() {
   const paths = [...state.selected];
-  setStatus(`Preparing ${paths.length} item(s) to drag…`);
+  setStatus(t('Preparing {n} item(s) to drag…', { n: paths.length }));
   drag.active = true;
   try {
     const dropped = await invoke('drag_out', { paths });
-    setStatus(dropped ? `Dragged out ${paths.length} item(s)` : 'Drag cancelled');
+    setStatus(dropped ? t('Dragged out {n} item(s)', { n: paths.length }) : t('Drag cancelled'));
   } finally {
     drag.active = false;
     $('dropzone').hidden = true;
@@ -830,16 +842,17 @@ function enter(dir) {
 
 // Progress events from long drive operations show in the status bar.
 window.__TAURI__.event.listen('progress', ({ payload: p }) => {
-  const verb = { reading: 'Reading', writing: 'Writing', verifying: 'Verifying' }[p.phase] || p.phase;
-  const pct = p.total ? Math.floor((p.done * 100) / p.total) : 0;
-  setStatus(`${verb} ${pct}% (${human(p.done)} of ${human(p.total)})`);
+  const v = { pct: p.total ? Math.floor((p.done * 100) / p.total) : 0, done: human(p.done), total: human(p.total) };
+  if (p.phase === 'reading') setStatus(t('Reading {pct}% ({done} of {total})', v));
+  else if (p.phase === 'writing') setStatus(t('Writing {pct}% ({done} of {total})', v));
+  else if (p.phase === 'verifying') setStatus(t('Verifying {pct}% ({done} of {total})', v));
 });
 
 function driveLine(d) {
-  const bits = [d.bus, d.media ? human(d.size) : 'no medium'];
+  const bits = [d.bus, d.media ? human(d.size) : t('no medium')];
   if (d.volumes.length) bits.push(d.volumes.join(' '));
-  if (d.system) bits.push('system disk, never written');
-  else if (!d.removable) bits.push('fixed disk');
+  if (d.system) bits.push(t('system disk, never written'));
+  else if (!d.removable) bits.push(t('fixed disk'));
   return bits.join(' · ');
 }
 
@@ -896,32 +909,35 @@ async function actionDrives() {
     return;
   }
   if (what === 'read') {
-    $('saveAsTitle').textContent = `Read ${d.name} to an image`;
+    $('saveAsTitle').textContent = t('Read {drive} to an image', { drive: d.name });
     const sync = () => { $('saveDynamic').disabled = !DYNAMIC.includes($('saveContainer').value); };
     $('saveContainer').onchange = sync;
     sync();
     if (await showDialog($('saveAsDlg')) !== 'ok') return;
     const container = $('saveContainer').value;
     const name = d.name.replace(/[^A-Za-z0-9 _-]+/g, '').trim() || 'drive';
-    const dest = await dialog.save({ title: `Read ${d.name} to`, defaultPath: `${name}.${CONTAINER_EXT[container]}`, filters: filterFor(container) });
+    const dest = await dialog.save({ title: t('Read {drive} to', { drive: d.name }), defaultPath: `${name}.${CONTAINER_EXT[container]}`, filters: filterFor(container) });
     if (!dest) return;
-    setStatus(`Reading ${d.name}…`);
+    setStatus(t('Reading {drive}…', { drive: d.name }));
     const r = await invoke('read_drive', { drive: d.path, dest, container, dynamic: !$('saveDynamic').disabled && $('saveDynamic').checked });
-    setStatus(`Read ${d.name} into ${baseName(dest)} (${human(r.bytes)}, ${human(r.stored)} of data)`);
-    if (await dialog.ask(`Read ${d.name} into ${baseName(dest)}. Open the image now?`, { title: 'Read drive', kind: 'info' })) await openImage(dest);
+    setStatus(t('Read {drive} into {name} ({size}, {stored} of data)', { drive: d.name, name: baseName(dest), size: human(r.bytes), stored: human(r.stored) }));
+    if (await dialog.ask(t('Read {drive} into {name}. Open the image now?', { drive: d.name, name: baseName(dest) }), { title: t('Read drive'), kind: 'info' })) await openImage(dest);
     return;
   }
-  const image = await dialog.open({ title: `Image to write to ${d.name}`, multiple: false, directory: false, filters: IMAGE_FILTERS, defaultPath: state.image?.path });
+  const image = await dialog.open({ title: t('Image to write to {drive}', { drive: d.name }), multiple: false, directory: false, filters: imageFilters(), defaultPath: state.image?.path });
   if (!image) return;
   const sure = await dialog.ask(
-    `Everything on ${d.name}${d.model ? ` (${d.model})` : ''}, ${driveLine(d)}, will be replaced with ${baseName(image)}.\n\nThis cannot be undone.`,
-    { title: 'Write image to drive', kind: 'warning', okLabel: 'Write', cancelLabel: 'Cancel' },
+    `${t('Everything on {drive}, {details}, will be replaced with {image}.', {
+      drive: `${d.name}${d.model ? ` (${d.model})` : ''}`, details: driveLine(d), image: baseName(image),
+    })}\n\n${t('This cannot be undone.')}`,
+    { title: t('Write image to drive'), kind: 'warning', okLabel: t('Write'), cancelLabel: t('Cancel') },
   );
   if (!sure) return;
-  setStatus(`Writing ${baseName(image)} to ${d.name}…`);
+  setStatus(t('Writing {image} to {drive}…', { image: baseName(image), drive: d.name }));
   const r = await invoke('write_drive', { image, drive: d.path, verify: $('driveVerify').checked, allowFixed: $('driveFixed').checked });
   if (state.image && state.image.path.toLowerCase() === d.path.toLowerCase()) await openImage(d.path);
-  setStatus(`Wrote ${human(r.bytes)} to ${d.name}${r.verified ? ', verified' : ''}`);
+  const v = { size: human(r.bytes), drive: d.name };
+  setStatus(r.verified ? t('Wrote {size} to {drive}, verified', v) : t('Wrote {size} to {drive}', v));
 }
 
 // ---------- rendering ----------
@@ -955,7 +971,7 @@ function renderPartitions() {
   for (const p of parts) {
     const o = document.createElement('option');
     o.value = p.index;
-    o.textContent = `${p.index}: ${p.type_name}${p.name ? ` "${p.name}"` : ''} — ${human(p.sectors * p.sector_size)}${p.fs ? '' : ' (unreadable)'}`;
+    o.textContent = `${p.index}: ${p.type_name}${p.name ? ` "${p.name}"` : ''} — ${human(p.sectors * p.sector_size)}${p.fs ? '' : ` (${t('unreadable')})`}`;
     o.selected = state.image.info.partition?.index === p.index;
     sel.append(o);
   }
@@ -1019,7 +1035,7 @@ function render() {
   tbody.replaceChildren();
   if (has) {
     if (state.dir) {
-      const up = row([['📁 ..', 'c-name'], ['', 'c-size'], ['Parent folder', 'c-type'], ['', 'c-date'], ['', 'c-attr']]);
+      const up = row([['📁 ..', 'c-name'], ['', 'c-size'], [t('Parent folder'), 'c-type'], ['', 'c-date'], ['', 'c-attr']]);
       up.ondblclick = () => run(() => enter(parent(state.dir)));
       tbody.append(up);
     }
@@ -1151,7 +1167,7 @@ getCurrentWebview().onDragDropEvent((event) => {
   const zone = $('dropzone');
   const opening = !state.image || !writable();
   if (p.type === 'enter' || p.type === 'over') {
-    $('dropText').textContent = opening ? 'Drop to open the image' : `Drop to inject into /${state.dir}`;
+    $('dropText').textContent = opening ? t('Drop to open the image') : t('Drop to inject into /{dir}', { dir: state.dir });
     zone.hidden = false;
   } else if (p.type === 'leave') {
     zone.hidden = true;
@@ -1167,4 +1183,35 @@ getCurrentWebview().onDragDropEvent((event) => {
   }
 });
 
-render();
+// ---------- language ----------
+
+async function setLanguage(lang) {
+  await I18N.load(lang);
+  translatePage();
+  $('statusLeft').dataset.working = t('working…');
+  // The geometry fields are copied from their template when first shown; start them again.
+  $('newGeo').replaceChildren();
+  $('formatGeo').replaceChildren();
+  $('langSel').value = I18N.lang;
+  render();
+}
+
+for (const [code, name] of LANGUAGES) {
+  const o = document.createElement('option');
+  o.value = code;
+  o.textContent = name;
+  $('langSel').append(o);
+}
+$('langSel').onchange = () => {
+  const lang = $('langSel').value;
+  I18N.remember(lang);
+  // Not through run(): switching must also work while something else is busy.
+  setLanguage(lang).catch(showError);
+};
+
+setLanguage(I18N.preferred())
+  .catch((e) => console.error(e))
+  .finally(() => {
+    document.documentElement.classList.add('ready');
+    render();
+  });
