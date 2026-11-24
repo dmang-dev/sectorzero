@@ -387,5 +387,7 @@ window.SZ_LOCALES['ja'] = {
   "{name} is now encrypted": "{name} を暗号化しました",
   "{name} is no longer encrypted": "{name} の暗号化を解除しました",
   "Encryption": "暗号化",
-  "Password (AES)": "パスワード (AES)"
+  "Password (AES)": "パスワード (AES)",
+  "Yes": "はい",
+  "No": "いいえ"
 };

@@ -387,5 +387,7 @@ window.SZ_LOCALES['nl'] = {
   "{name} is now encrypted": "{name} is nu versleuteld",
   "{name} is no longer encrypted": "{name} is niet meer versleuteld",
   "Encryption": "Versleuteling",
-  "Password (AES)": "Wachtwoord (AES)"
+  "Password (AES)": "Wachtwoord (AES)",
+  "Yes": "Ja",
+  "No": "Nee"
 };

@@ -387,5 +387,7 @@ window.SZ_LOCALES['ru'] = {
   "{name} is now encrypted": "Файл {name} теперь зашифрован",
   "{name} is no longer encrypted": "Файл {name} больше не зашифрован",
   "Encryption": "Шифрование",
-  "Password (AES)": "Пароль (AES)"
+  "Password (AES)": "Пароль (AES)",
+  "Yes": "Да",
+  "No": "Нет"
 };

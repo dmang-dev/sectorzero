@@ -2,7 +2,13 @@
 'use strict';
 
 const { invoke } = window.__TAURI__.core;
-const dialog = window.__TAURI__.dialog;
+// Native dialogs; ask() gets translated Yes/No buttons (the system's own stay English).
+const dialog = {
+  ...window.__TAURI__.dialog,
+  ask: (message, options = {}) => window.__TAURI__.dialog.ask(message, {
+    okLabel: t('Yes'), cancelLabel: t('No'), ...options,
+  }),
+};
 const { getCurrentWebview } = window.__TAURI__.webview;
 
 const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk', 'imz', 'wlz', 'vhd', 'vud', 'vhdx', 'vmdk', 'vdi', 'qcow2', '001',
@@ -1321,6 +1327,17 @@ document.querySelectorAll('input[name="newKind"]').forEach((r) => { r.onchange =
 $('newMedia').onchange = syncNewDialog;
 $('newContainer').onchange = syncNewDialog;
 $('newFs').onchange = syncNewDialog;
+
+// Enter in a dialog's text field means its primary button. The browser's own implicit
+// submission would press the form's first button, which is Cancel.
+document.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter' || ev.target.tagName !== 'INPUT') return;
+  if (['checkbox', 'radio', 'button', 'submit'].includes(ev.target.type)) return;
+  const ok = ev.target.closest('dialog[open]')?.querySelector('button.primary');
+  if (!ok || ok.disabled) return;
+  ev.preventDefault();
+  ok.click();
+}, true);
 
 document.addEventListener('keydown', (ev) => {
   if (document.querySelector('dialog[open]')) return;
