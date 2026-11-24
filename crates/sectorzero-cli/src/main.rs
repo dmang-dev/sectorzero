@@ -11,8 +11,8 @@ use sectorzero_core::{
     DriveWriteOptions, Entry, EntryEdit, FLOPPY_FORMATS, FloppyFormat, ForkMode, FsKind, Geometry,
     Image, IsoBuildOptions, Layout, ListingFormat, MEDIA_FORMATS, MediaFormat, MediaLayout,
     NewImage, OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo, WipePattern, build_iso,
-    checksum_file, convert_with_progress, create_differencing, drive_info, list_drives, probe,
-    render_listing, truncate_image, wipe_drive, write_image_to_drive,
+    checksum_file, checksum_virtual_disk, convert_with_progress, create_differencing, drive_info,
+    list_drives, probe, render_listing, truncate_image, wipe_drive, write_image_to_drive,
 };
 use sectorzero_i18n::{t, tr};
 
@@ -1794,7 +1794,13 @@ fn run(cli: Cli) -> Result<()> {
             } else if let Some(p) = &path {
                 open(&img, false)?.checksum(p)?
             } else {
-                open_image(&img, false)?.checksum_disk()?
+                // Without a file system (a blank or wiped disk) the raw disk is still hashed.
+                match open_image(&img, false) {
+                    Ok(image) => image.checksum_disk()?,
+                    Err(e) => {
+                        checksum_virtual_disk(&img.image, img.member.as_deref()).map_err(|_| e)?
+                    }
+                }
             };
             if json {
                 return print_json(&sums);

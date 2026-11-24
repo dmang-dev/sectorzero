@@ -190,3 +190,18 @@ fn messages_follow_the_language() {
     let (ok, out) = s0(&["--lang", "xx", "info", img]);
     assert!(!ok && out.contains("unknown language"), "{out}");
 }
+
+/// A blank (or wiped) disk has no file system, but its checksum is still the raw disk's.
+#[test]
+fn checksum_of_a_blank_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let raw = tmp.path().join("blank.img");
+    std::fs::write(&raw, vec![0u8; 1 << 20]).unwrap();
+    let (ok, out) = s0(&["--json", "checksum", raw.to_str().unwrap()]);
+    assert!(ok, "{out}");
+    // SHA-256 of 1 MiB of zeros.
+    assert!(
+        out.contains("30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58"),
+        "{out}"
+    );
+}

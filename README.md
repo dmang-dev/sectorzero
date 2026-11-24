@@ -11,6 +11,15 @@ VMware, Oracle (VirtualBox), Apple, Iomega, Imation, SyQuest, NEC, Nero and Alco
 product names and trademarks belong to their owners and are used only to identify the file
 formats, media and devices SectorZero works with.
 
+## Disclaimer
+
+SectorZero reads and writes disk images and physical media (floppy disks, USB sticks, memory
+cards, hard disks) at the sector level. Writing, wiping, resizing or editing can destroy data,
+and reading old or damaged media can stress it further. Use it at your own risk: keep backups,
+and check the target drive before writing to it. SectorZero is provided "as is", without
+warranty of any kind, and its authors and contributors are not liable for any data loss,
+hardware damage or other harm from using it. The [MIT license](LICENSE) has the full terms.
+
 See [RESEARCH.md](RESEARCH.md) for the feature survey, format notes and roadmap.
 
 ## Status
