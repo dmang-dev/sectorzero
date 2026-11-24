@@ -29,12 +29,14 @@ mod window;
 pub use checksum::{Checksums, checksum_file};
 pub use container::{ContainerInfo, ContainerKind, create_differencing};
 pub use device::{
-    DriveInfo, DriveWriteOptions, DriveWriteReport, drive_info, is_device_path, list_drives,
-    write_image_to_drive,
+    DriveInfo, DriveWipeOptions, DriveWriteOptions, DriveWriteReport, WipePattern, drive_info,
+    eject_drive, is_device_path, list_drives, wipe_drive, write_image_to_drive,
 };
 pub use error::{Error, Result};
 pub use fatraw::{BootSectorEdit, BootSectorInfo, DefragReport, EntryEdit};
-pub use format::{FLOPPY_FORMATS, FloppyFormat, Geometry, NewImage};
+pub use format::{
+    FLOPPY_FORMATS, FloppyFormat, Geometry, MEDIA_FORMATS, MediaFormat, MediaLayout, NewImage,
+};
 pub use image::{
     ConvertReport, Image, OpenOptions, TruncateReport, convert, convert_with_progress,
     truncate_image,
@@ -43,7 +45,10 @@ pub use iso::{BootEntry, IsoInfo};
 pub use iso_build::{BootPlatform, IsoBuildOptions, IsoBuildReport, build_iso};
 pub use listing::{ListingFormat, render_listing};
 pub use partition::{Layout, PartitionInfo, PartitionScheme};
-pub use volume::{Attributes, CreateOptions, Entry, FsKind, Stats, Volume, VolumeInfo};
+pub use volume::{
+    Attributes, CreateOptions, DiskResize, Entry, FsKind, PartitionResize, Stats, Volume,
+    VolumeInfo,
+};
 
 /// Inspect an image's container and layout without mounting anything.
 pub fn probe(path: &std::path::Path) -> Result<(ContainerInfo, Layout)> {

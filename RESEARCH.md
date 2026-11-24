@@ -275,7 +275,47 @@ passes on the volumes after the kernel wrote to them, SectorZero reads the kerne
 writes more, and the kernel reads those. `fsck.exfat` and Windows' `chkdsk` have not been run
 on them yet.
 
-Still to do, roughly in order: low-level formatting of physical floppies and drive wiping and
-duplication, batch mode, NTFS
-writing, resizing partitioned disks, converting a boot floppy into a
+Drive copy, drive wiping and partitioned resize (2026-11-23). `write_image_to_drive` accepts a
+drive as its source, which gives drive-to-drive copies with the same locking and read-back
+verification; a source and target that are the same disk (including a Linux partition of the
+target disk) are refused. `wipe_drive` zeroes the whole drive, optionally after a pass of
+random data, and verifies that every byte reads back as zero; the same system-disk and
+fixed-disk rules apply. `Volume::resize_disk` resizes MBR and GPT disk images in any writable
+container: the last partition (by end sector) grows or shrinks with the disk and its FAT volume
+is rebuilt like "Change format" does (files, dates, attributes, label, serial, boot code; the
+FAT type follows the new size and the MBR type with it), or, keeping the partitions, only the
+container and the table change. GPT gets both headers, both entry arrays, CRCs, the last usable
+LBA and the protective MBR rewritten; shrinking below a partition's end is refused, as are
+growing a logical partition and rebuilding a non-FAT file system. Checked in the Alpine guest:
+the copy and wipe on its floppy and virtio disks (`cmp`, all-zero reads), and on resized MBR and
+GPT disks `sfdisk --verify` is clean, the kernel reports no GPT problems, the rebuilt FAT
+partitions mount with every md5 matching, and `e2fsck` is clean on an ext4 disk resized with
+its partitions kept.
+
+Removable media of 1980-2005 (2026-11-23, phase 1). Zip, Jaz, SuperDisk and magneto-optical
+drives on USB, ATAPI or SCSI are ordinary removable disks to the operating system, so the drive
+support above already reads and writes them; parallel-port Zip drives only have drivers on
+Linux. Drives report their logical sector size, and 640 MB / 1.3 GB MO media use 2048-byte
+sectors, which the drive I/O, the partition parser and FAT handle. `MEDIA_FORMATS` holds exact
+capacities as the drives report them (from drive logs, manuals and `fdisk` output on mailing
+lists; no GPL code was consulted): Zip 100 196,608 and Zip 250 489,532 sectors, Jaz 1 GB
+2,091,050 and 2 GB 3,915,600, LS-120 246,528, MO 128 MB 248,826 and 230 MB 446,325 (512-byte
+sectors), MO 640 MB 310,352 and GigaMO 1.3 GB 605,846 (2048-byte sectors). Iomega's PC format
+is one FAT16 partition in MBR slot 4 at sector 32 (64 heads, 32 sectors per track, type 0x06);
+SuperDisk and MO media were formatted like floppies, without a partition table (LS-120: FAT16,
+2 KiB clusters, media byte 0xF0). The FAT details of Zip and Jaz cartridges (cluster size, root
+entries) follow Windows' defaults for the size because no factory boot sector dump was found,
+and the 230 MB MO count is from a single source. Not found reliably, so no presets yet: Zip
+750, LS-240, MO 540 MB, SyQuest (44/88/105/200/270, EZ135, EZFlyer, SyJet, SparQ), Bernoulli,
+Clik!/PocketZip and Castlewood Orb. `eject_drive` locks and dismounts, allows removal and
+ejects (IOCTL_STORAGE_EJECT_MEDIA on Windows; SCSI door unlock and CDROMEJECT, which Linux
+accepts on any SCSI disk, or FDEJECT). Checked in the Alpine guest on QEMU removable SCSI disks
+(one with 2048-byte logical blocks): Linux finds the Zip partition in slot 4, mounts it and the
+2048-byte MO superfloppy and reads the files, the MO drive reads back with the image's disk
+checksum, and the Zip drive has no medium after `s0 eject`. Real cartridges have not been tried.
+Mac-formatted cartridges (Apple Partition Map, HFS/HFS+) are phase 2.
+
+Still to do, roughly in order: Apple Partition Map and HFS/HFS+ (Mac-formatted Zip, Jaz and
+SyQuest cartridges), low-level formatting of physical floppies, batch mode, NTFS
+writing, resizing ext/exFAT/NTFS partitions, converting a boot floppy into a
 bootable hard disk image, encrypted IMZ (proprietary), and the macOS and Android builds.

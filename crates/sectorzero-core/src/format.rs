@@ -137,6 +137,177 @@ impl FloppyFormat {
     }
 }
 
+/// How a removable medium comes formatted for PCs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase", tag = "kind")]
+pub enum MediaLayout {
+    /// No partition table: the file system starts at sector 0 ("superfloppy").
+    Superfloppy,
+    /// An MBR holding one partition, in `slot` (1-4), from sector `start` to the end.
+    Mbr { slot: u8, start: u32 },
+}
+
+/// A removable cartridge or disk (Zip, Jaz, SuperDisk, magneto-optical, …): its exact
+/// capacity as the drive reports it, and how the vendor formatted it for PCs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MediaFormat {
+    /// Short id used on the command line (`s0 new -m zip100`).
+    pub id: &'static str,
+    pub name: &'static str,
+    pub total_sectors: u64,
+    pub sector_size: u32,
+    /// The CHS geometry the drive reports (used in the BPB and the MBR's CHS fields).
+    pub heads: u16,
+    pub sectors_per_track: u16,
+    pub layout: MediaLayout,
+    /// FAT type (12, 16 or 32); 0 picks it from the size.
+    pub fat_bits: u8,
+    /// FAT cluster size; 0 picks the default for the size.
+    pub bytes_per_cluster: u32,
+    /// Media descriptor byte.
+    pub media: u8,
+}
+
+impl MediaFormat {
+    pub fn size_bytes(&self) -> u64 {
+        self.total_sectors * u64::from(self.sector_size)
+    }
+
+    /// Look up a preset by id, ignoring case, spaces, dashes and dots (`zip100`, `Zip-100`).
+    pub fn find(query: &str) -> Option<&'static MediaFormat> {
+        let norm = |s: &str| {
+            s.chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_ascii_lowercase()
+        };
+        let q = norm(query);
+        MEDIA_FORMATS.iter().find(|m| norm(m.id) == q)
+    }
+
+    /// The preset whose capacity is exactly `bytes`, if any.
+    pub fn matching(bytes: u64) -> Option<&'static MediaFormat> {
+        MEDIA_FORMATS.iter().find(|m| m.size_bytes() == bytes)
+    }
+}
+
+const IOMEGA: MediaLayout = MediaLayout::Mbr { slot: 4, start: 32 };
+
+/// Capacities are what the drives report (READ CAPACITY), from drive logs, manuals and
+/// mailing-list `fdisk` output. Iomega's PC format puts one FAT16 partition in MBR slot 4
+/// at sector 32 (slot 4 for Macintosh compatibility); SuperDisk and magneto-optical media
+/// were formatted like floppies, without a partition table.
+pub const MEDIA_FORMATS: &[MediaFormat] = &[
+    MediaFormat {
+        id: "zip100",
+        name: "Iomega Zip 100",
+        total_sectors: 196_608,
+        sector_size: 512,
+        heads: 64,
+        sectors_per_track: 32,
+        layout: IOMEGA,
+        fat_bits: 16,
+        bytes_per_cluster: 2048,
+        media: 0xF8,
+    },
+    MediaFormat {
+        id: "zip250",
+        name: "Iomega Zip 250",
+        total_sectors: 489_532,
+        sector_size: 512,
+        heads: 64,
+        sectors_per_track: 32,
+        layout: IOMEGA,
+        fat_bits: 16,
+        bytes_per_cluster: 4096,
+        media: 0xF8,
+    },
+    MediaFormat {
+        id: "jaz1g",
+        name: "Iomega Jaz 1 GB",
+        total_sectors: 2_091_050,
+        sector_size: 512,
+        heads: 64,
+        sectors_per_track: 32,
+        layout: IOMEGA,
+        fat_bits: 16,
+        bytes_per_cluster: 16384,
+        media: 0xF8,
+    },
+    MediaFormat {
+        id: "jaz2g",
+        name: "Iomega Jaz 2 GB",
+        total_sectors: 3_915_600,
+        sector_size: 512,
+        heads: 64,
+        sectors_per_track: 32,
+        layout: IOMEGA,
+        fat_bits: 16,
+        bytes_per_cluster: 32768,
+        media: 0xF8,
+    },
+    MediaFormat {
+        id: "ls120",
+        name: "LS-120 SuperDisk 120 MB",
+        total_sectors: 246_528,
+        sector_size: 512,
+        heads: 8,
+        sectors_per_track: 32,
+        layout: MediaLayout::Superfloppy,
+        fat_bits: 16,
+        bytes_per_cluster: 2048,
+        media: 0xF0,
+    },
+    MediaFormat {
+        id: "mo128",
+        name: "3.5\" magneto-optical 128 MB",
+        total_sectors: 248_826,
+        sector_size: 512,
+        heads: 64,
+        sectors_per_track: 32,
+        layout: MediaLayout::Superfloppy,
+        fat_bits: 16,
+        bytes_per_cluster: 2048,
+        media: 0xF0,
+    },
+    MediaFormat {
+        id: "mo230",
+        name: "3.5\" magneto-optical 230 MB",
+        total_sectors: 446_325,
+        sector_size: 512,
+        heads: 1,
+        sectors_per_track: 25,
+        layout: MediaLayout::Superfloppy,
+        fat_bits: 16,
+        bytes_per_cluster: 4096,
+        media: 0xF0,
+    },
+    MediaFormat {
+        id: "mo640",
+        name: "3.5\" magneto-optical 640 MB",
+        total_sectors: 310_352,
+        sector_size: 2048,
+        heads: 64,
+        sectors_per_track: 32,
+        layout: MediaLayout::Superfloppy,
+        fat_bits: 16,
+        bytes_per_cluster: 0,
+        media: 0xF0,
+    },
+    MediaFormat {
+        id: "mo1300",
+        name: "3.5\" GigaMO 1.3 GB",
+        total_sectors: 605_846,
+        sector_size: 2048,
+        heads: 64,
+        sectors_per_track: 32,
+        layout: MediaLayout::Superfloppy,
+        fat_bits: 0,
+        bytes_per_cluster: 0,
+        media: 0xF0,
+    },
+];
+
 /// A custom FAT geometry (WinImage's "custom format"). Sectors are 512 bytes. Zero in
 /// `bytes_per_cluster`, `root_entries` or `fat_bits` means "pick automatically".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,6 +414,8 @@ pub enum NewImage {
     },
     /// A bare FAT volume with every BPB parameter chosen by the caller.
     Custom(Geometry),
+    /// A removable medium preset, laid out the way its vendor formatted it.
+    Media(&'static MediaFormat),
 }
 
 impl NewImage {
@@ -251,6 +424,7 @@ impl NewImage {
             NewImage::Floppy(f) => f.size_bytes(),
             NewImage::Volume { size_bytes } => size_bytes / 512 * 512,
             NewImage::Custom(g) => g.size_bytes(),
+            NewImage::Media(m) => m.size_bytes(),
         }
     }
 }

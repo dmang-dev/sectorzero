@@ -77,7 +77,7 @@ function statusForImage() {
     return;
   }
   const i = state.image.info;
-  const what = i.floppy_format || t('{fs} volume', { fs: i.fs_type });
+  const what = i.floppy_format || i.media_format || t('{fs} volume', { fs: i.fs_type });
   const bits = [state.image.name, i.partition ? t('{what}, partition {n}', { what, n: i.partition.index }) : what];
   if (i.label) bits.push(i.label);
   setStatus(bits.join(' — ') + (i.fs_writable ? '' : ` (${t('read-only')})`));
@@ -299,11 +299,25 @@ function syncNewDialog() {
   $('newLabelText').textContent = t('Volume label (optional, up to {n} characters)', { n: ext ? 16 : 11 });
   const c = $('newContainer').value;
   $('newDynamic').disabled = !DYNAMIC.includes(c);
+  // Media with 2048-byte sectors (magneto-optical) take FAT only.
+  const m = kind === 'media' && state.media?.find((x) => x.id === $('newMedia').value);
+  const fatOnly = !!m && m.sector_size !== 512;
+  for (const o of $('newFs').options) o.disabled = fatOnly && o.value !== 'fat';
+  if (fatOnly) $('newFs').value = 'fat';
 }
 
 async function actionNew() {
   await loadFormats();
   if (!$('newFormat').options.length) fillFormatSelect($('newFormat'));
+  if (!state.media) {
+    state.media = await invoke('media_formats');
+    $('newMedia').replaceChildren(...state.media.map((m) => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = `${m.name} · ${human(m.total_sectors * m.sector_size)}`;
+      return o;
+    }));
+  }
   geoInit($('newGeo'));
   syncNewDialog();
   if (await showDialog($('newDlg')) !== 'ok') return;
@@ -315,7 +329,7 @@ async function actionNew() {
   if (!path) return;
   const spec = {
     path,
-    format: kind === 'floppy' ? $('newFormat').value : null,
+    format: kind === 'floppy' ? $('newFormat').value : kind === 'media' ? $('newMedia').value : null,
     size_mb: kind === 'disk' ? Number($('newSize').value) : null,
     label: $('newLabel').value || null,
     scheme: kind === 'disk' ? $('newScheme').value : 'none',
@@ -489,7 +503,22 @@ async function actionDefrag() {
   setStatus(t('Defragmented: {moved} cluster(s) moved, {extents} extent(s) now', { moved: done.moved_clusters, extents: done.fragments }));
 }
 
+// Partitioned disks: change the disk size (and the last partition with it).
+async function actionResizeDisk() {
+  const lastFat = (state.image.info.layout.partitions || []).reduce((a, p) => (!a || p.start_lba + p.sectors > a.start_lba + a.sectors ? p : a), null)?.is_fat;
+  $('resizeSize').value = Math.round(state.image.info.container.virtual_size / 1048576);
+  $('resizeKeep').checked = !lastFat;
+  if (await showDialog($('resizeDlg')) !== 'ok') return;
+  const keep = state.image.path;
+  state.image = await invoke('resize_disk', { sizeMb: Number($('resizeSize').value), keepPartitions: $('resizeKeep').checked });
+  state.image.path = keep;
+  state.dir = '';
+  await refresh();
+  setStatus(t('Resized the disk to {size}', { size: human(state.image.info.container.virtual_size) }));
+}
+
 async function actionFormat() {
+  if (['Mbr', 'Gpt'].includes(state.image.info.layout.kind)) return actionResizeDisk();
   await loadFormats();
   fillFormatSelect($('formatSel'), { withDisk: true, selected: '' });
   const o = document.createElement('option');
@@ -616,7 +645,7 @@ async function actionInfo() {
     for (const b of i.iso.boot_entries) rows.push([t('Boot entry {n}', { n: b.index }), `${b.platform}, ${b.media}, ${bytes(b.image_size)}`]);
   } else {
     rows.push(
-      [t('Format'), i.floppy_format || '—'],
+      [t('Format'), i.floppy_format || i.media_format || '—'],
       [t('Label'), i.label || none],
       [i.fs_type.startsWith('ext') ? 'UUID' : t('Serial number'), i.volume_id],
       [t('OEM name'), i.oem_name || '—'],
@@ -850,6 +879,8 @@ window.__TAURI__.event.listen('progress', ({ payload: p }) => {
   if (p.phase === 'reading') setStatus(t('Reading {pct}% ({done} of {total})', v));
   else if (p.phase === 'writing') setStatus(t('Writing {pct}% ({done} of {total})', v));
   else if (p.phase === 'verifying') setStatus(t('Verifying {pct}% ({done} of {total})', v));
+  else if (p.phase === 'random') setStatus(t('Writing random data {pct}% ({done} of {total})', v));
+  else if (p.phase === 'zeroing') setStatus(t('Zeroing {pct}% ({done} of {total})', v));
 });
 
 function driveLine(d) {
@@ -899,6 +930,67 @@ function syncDriveButtons() {
   $('driveOpen').disabled = !d;
   $('driveRead').disabled = !d;
   $('driveWrite').disabled = !d || d.system || (fixed && !$('driveFixed').checked);
+  $('driveWipe').disabled = $('driveWrite').disabled;
+  $('driveCopy').disabled = !d;
+  $('driveEject').disabled = !d || !d.removable || !d.media || d.system;
+}
+
+const driveTitle = (d) => `${d.name}${d.model ? ` (${d.model})` : ''}`;
+
+// Copy the selected drive onto another one (sector for sector).
+async function copyDrive(src) {
+  const targets = [...document.querySelectorAll('#driveList input')].map((i) => i._drive)
+    .filter((d) => d.media && !d.system && d.path !== src.path);
+  if (!targets.length) throw new Error(t('No other drive can receive the copy.'));
+  const sel = $('copyTarget');
+  sel.replaceChildren(...targets.map((d, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = `${driveTitle(d)} · ${driveLine(d)}`;
+    return o;
+  }));
+  const target = () => targets[Number(sel.value)];
+  const sync = () => {
+    const fixed = !target().removable;
+    $('copyFixedWrap').hidden = !fixed;
+    if (!fixed) $('copyFixed').checked = false;
+    $('copyOk').disabled = (fixed && !$('copyFixed').checked) || target().size < src.size;
+    $('copyOk').title = target().size < src.size ? t('The target drive is smaller than {drive}', { drive: src.name }) : '';
+  };
+  sel.onchange = sync;
+  $('copyFixed').onchange = sync;
+  const first = targets.findIndex((d) => d.removable && d.size >= src.size);
+  sel.value = String(Math.max(first, 0));
+  sync();
+  $('copyTitle').textContent = t('Copy {drive} to', { drive: src.name });
+  if (await showDialog($('copyDlg')) !== 'ok') return;
+  const d = target();
+  const sure = await dialog.ask(
+    `${t('Everything on {target}, {details}, will be replaced with a copy of {drive}.', {
+      target: driveTitle(d), details: driveLine(d), drive: driveTitle(src),
+    })}\n\n${t('This cannot be undone.')}`,
+    { title: t('Copy drive'), kind: 'warning', okLabel: t('Copy'), cancelLabel: t('Cancel') },
+  );
+  if (!sure) return;
+  setStatus(t('Copying {drive} to {target}…', { drive: src.name, target: d.name }));
+  const r = await invoke('write_drive', { image: src.path, drive: d.path, verify: $('driveVerify').checked, allowFixed: $('copyFixed').checked });
+  const v = { size: human(r.bytes), target: d.name };
+  setStatus(r.verified ? t('Copied {size} to {target}, verified', v) : t('Copied {size} to {target}', v));
+}
+
+async function wipeDrive(d) {
+  $('wipeText').textContent = t('Everything on {drive}, {details}, will be erased, partitions included.', { drive: driveTitle(d), details: driveLine(d) });
+  $('wipeRandom').checked = false;
+  if (await showDialog($('wipeDlg')) !== 'ok') return;
+  setStatus(t('Wiping {drive}…', { drive: d.name }));
+  const r = await invoke('wipe_drive', { drive: d.path, random: $('wipeRandom').checked, verify: $('driveVerify').checked, allowFixed: $('driveFixed').checked });
+  if (state.image && state.image.path.toLowerCase() === d.path.toLowerCase()) {
+    state.image = null;
+    state.entries = [];
+    render();
+  }
+  const v = { size: human(r.bytes), drive: d.name };
+  setStatus(r.verified ? t('Wiped {size} on {drive}, verified', v) : t('Wiped {size} on {drive}', v));
 }
 
 async function actionDrives() {
@@ -907,7 +999,15 @@ async function actionDrives() {
   await fillDrives();
   const what = await showDialog($('drivesDlg'));
   const d = selectedDrive();
-  if (!d || !['open', 'read', 'write'].includes(what)) return;
+  if (!d || !['open', 'read', 'write', 'copy', 'wipe', 'eject'].includes(what)) return;
+  if (what === 'eject') {
+    if (state.image && state.image.path.toLowerCase() === d.path.toLowerCase()) await closeImage();
+    await invoke('eject_drive', { drive: d.path });
+    setStatus(t('Ejected {drive}', { drive: d.name }));
+    return;
+  }
+  if (what === 'copy') return copyDrive(d);
+  if (what === 'wipe') return wipeDrive(d);
   if (what === 'open') {
     await openImage(d.path);
     return;
@@ -956,7 +1056,7 @@ function updateButtons() {
   const iso = has && state.image.info.iso;
   $('btnBootImage').hidden = !iso;
   for (const id of ['btnLabel', 'btnBoot', 'btnDefrag', 'btnFormat']) $(id).hidden = !!iso;
-  $('btnFormat').disabled ||= !has || state.image.info.layout.kind !== 'BareVolume';
+  $('btnFormat').disabled ||= !has || !['BareVolume', 'Mbr', 'Gpt'].includes(state.image.info.layout.kind);
   const sel = selectedEntries();
   $('mnuIsoReplace').hidden = !iso;
   $('mnuIsoReplace').disabled = !(sel.length === 1 && !sel[0].is_dir);
@@ -1139,6 +1239,7 @@ document.addEventListener('mousemove', (ev) => {
 document.addEventListener('mouseup', () => { drag.start = null; });
 $('partSel').onchange = () => run(() => openImage(state.image.path, Number($('partSel').value)));
 document.querySelectorAll('input[name="newKind"]').forEach((r) => { r.onchange = syncNewDialog; });
+$('newMedia').onchange = syncNewDialog;
 $('newContainer').onchange = syncNewDialog;
 $('newFs').onchange = syncNewDialog;
 

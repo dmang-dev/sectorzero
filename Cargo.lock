@@ -3446,6 +3446,7 @@ dependencies = [
  "crc32fast",
  "fatfs",
  "flate2",
+ "libc",
  "md-5",
  "ntfs",
  "serde",

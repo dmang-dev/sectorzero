@@ -363,8 +363,8 @@ fn read_gpt(disk: &mut dyn Disk, ss: u64) -> Result<Option<Vec<PartitionInfo>>> 
 }
 
 /// CHS address for an MBR entry (255 heads, 63 sectors; saturates past cylinder 1023).
-fn chs(lba: u64) -> [u8; 3] {
-    let (spt, heads) = (63u64, 255u64);
+fn chs_with(lba: u64, heads: u16, spt: u16) -> [u8; 3] {
+    let (spt, heads) = (u64::from(spt), u64::from(heads));
     let c = lba / (spt * heads);
     if c > 1023 {
         return [0xFE, 0xFF, 0xFF];
@@ -375,11 +375,23 @@ fn chs(lba: u64) -> [u8; 3] {
 }
 
 fn mbr_entry(mbr: &mut [u8], slot: usize, boot: bool, type_id: u8, start: u64, sectors: u64) {
+    mbr_entry_geo(mbr, slot, boot, type_id, start, sectors, (255, 63));
+}
+
+fn mbr_entry_geo(
+    mbr: &mut [u8],
+    slot: usize,
+    boot: bool,
+    type_id: u8,
+    start: u64,
+    sectors: u64,
+    (heads, spt): (u16, u16),
+) {
     let e = 446 + slot * 16;
     mbr[e] = if boot { 0x80 } else { 0 };
-    mbr[e + 1..e + 4].copy_from_slice(&chs(start));
+    mbr[e + 1..e + 4].copy_from_slice(&chs_with(start, heads, spt));
     mbr[e + 4] = type_id;
-    mbr[e + 5..e + 8].copy_from_slice(&chs(start + sectors - 1));
+    mbr[e + 5..e + 8].copy_from_slice(&chs_with(start + sectors - 1, heads, spt));
     put_le32(mbr, e + 8, start.min(0xFFFF_FFFF) as u32);
     put_le32(mbr, e + 12, sectors.min(0xFFFF_FFFF) as u32);
 }
@@ -428,6 +440,32 @@ pub(crate) fn write_mbr(
     let mut mbr = vec![0u8; 512];
     mbr[440..444].copy_from_slice(&new_guid()[0..4]);
     mbr_entry(&mut mbr, 0, true, type_id, start, sectors);
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
+    disk.write_at(0, &mbr)
+}
+
+/// Write an MBR for a removable medium: one partition in `slot` (1-4), not marked active,
+/// with CHS values in the drive's own geometry.
+pub(crate) fn write_media_mbr(
+    disk: &mut dyn Disk,
+    slot: u8,
+    type_id: u8,
+    start: u64,
+    sectors: u64,
+    geo: (u16, u16),
+) -> io::Result<()> {
+    let mut mbr = vec![0u8; 512];
+    mbr[440..444].copy_from_slice(&new_guid()[0..4]);
+    mbr_entry_geo(
+        &mut mbr,
+        usize::from(slot - 1),
+        false,
+        type_id,
+        start,
+        sectors,
+        geo,
+    );
     mbr[510] = 0x55;
     mbr[511] = 0xAA;
     disk.write_at(0, &mbr)
@@ -487,14 +525,119 @@ pub(crate) fn write_gpt(
     Ok(())
 }
 
+/// The last sector a partition may use on a disk of `total` sectors: the end of the disk on
+/// MBR, before the backup entries and header on GPT.
+pub(crate) fn last_usable(layout: &Layout, disk: &mut dyn Disk, total: u64) -> Result<u64> {
+    match layout {
+        Layout::Gpt(_) => {
+            let ss = u64::from(disk.sector_size());
+            let h = read(disk, ss, ss as usize)?;
+            if !gpt_header_ok(&h) {
+                return Err(Error::Invalid(
+                    "the primary GPT header is damaged; resizing needs it".into(),
+                ));
+            }
+            let table = (u64::from(le32(&h, 80)) * u64::from(le32(&h, 84))).div_ceil(ss);
+            Ok(total.saturating_sub(2 + table))
+        }
+        Layout::Mbr(_) => Ok(total.min(1 << 32) - 1),
+        _ => Err(Error::Invalid("the disk has no partition table".into())),
+    }
+}
+
+/// After a disk changed size: point the partition table at the new end (GPT: backup entries
+/// and header moved to the last sectors, last usable LBA, protective MBR; MBR: nothing moves),
+/// and optionally give partition `index` a new length (and MBR type). Fails if any partition
+/// would end past the usable area.
+pub(crate) fn fit_table(
+    disk: &mut dyn Disk,
+    layout: &Layout,
+    resize: Option<(usize, u64, Option<u8>)>,
+) -> Result<()> {
+    let ss = u64::from(disk.sector_size());
+    let total = disk.size() / ss;
+    let limit = last_usable(layout, disk, total)?;
+    let end_of = |p: &PartitionInfo| match resize {
+        Some((i, n, _)) if i == p.index => p.start_lba + n - 1,
+        _ => p.start_lba + p.sectors - 1,
+    };
+    for p in layout.partitions() {
+        if end_of(p) > limit {
+            return Err(Error::Invalid(format!(
+                "partition {} ends at sector {} but the new size only reaches sector {limit}",
+                p.index,
+                end_of(p)
+            )));
+        }
+    }
+    match layout {
+        Layout::Mbr(_) => {
+            let mut mbr = read(disk, 0, 512)?;
+            if let Some((index, sectors, type_id)) = resize {
+                if index > 4 {
+                    return Err(Error::Unsupported(
+                        "resizing a logical partition (inside an extended one)".into(),
+                    ));
+                }
+                let e = 446 + (index - 1) * 16;
+                let start = u64::from(le32(&mbr, e + 8));
+                let boot = mbr[e] == 0x80;
+                let t = type_id.unwrap_or(mbr[e + 4]);
+                mbr_entry(&mut mbr, index - 1, boot, t, start, sectors);
+            }
+            disk.write_at(0, &mbr)?;
+        }
+        Layout::Gpt(_) => {
+            let mut h = read(disk, ss, ss as usize)?;
+            let hsize = le32(&h, 12) as usize;
+            let (count, esize) = (u64::from(le32(&h, 80)), u64::from(le32(&h, 84)));
+            let table_sectors = (count * esize).div_ceil(ss);
+            let mut entries = read(disk, le64(&h, 72) * ss, (table_sectors * ss) as usize)?;
+            if let Some((index, sectors, _)) = resize {
+                let e = (index - 1) * esize as usize;
+                let first = le64(&entries, e + 32);
+                put_le64(&mut entries, e + 40, first + sectors - 1);
+            }
+            let crc = crc32fast::hash(&entries[..(count * esize) as usize]);
+            let backup_entries = total - 1 - table_sectors;
+            let finish = |h: &mut Vec<u8>, current: u64, backup: u64, at: u64| {
+                put_le64(h, 24, current);
+                put_le64(h, 32, backup);
+                put_le64(h, 48, limit);
+                put_le64(h, 72, at);
+                put_le32(h, 88, crc);
+                put_le32(h, 16, 0);
+                let c = crc32fast::hash(&h[..hsize]);
+                put_le32(h, 16, c);
+            };
+            let primary_entries = le64(&h, 72);
+            finish(&mut h, 1, total - 1, primary_entries);
+            disk.write_at(ss, &h)?;
+            disk.write_at(le64(&h, 72) * ss, &entries)?;
+            let mut b = h.clone();
+            finish(&mut b, total - 1, 1, backup_entries);
+            disk.write_at(backup_entries * ss, &entries)?;
+            disk.write_at((total - 1) * ss, &b)?;
+            let mut mbr = read(disk, 0, 512)?;
+            if let Some(slot) = (0..4).find(|&i| mbr[446 + i * 16 + 4] == 0xEE) {
+                let boot = mbr[446 + slot * 16] == 0x80;
+                mbr_entry(&mut mbr, slot, boot, 0xEE, 1, (total - 1).min(0xFFFF_FFFF));
+                disk.write_at(0, &mbr)?;
+            }
+        }
+        _ => return Err(Error::Invalid("the disk has no partition table".into())),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn chs_encoding() {
-        assert_eq!(chs(0), [0, 1, 0]);
-        assert_eq!(chs(2048), [32, 33, 0]);
-        assert_eq!(chs(u64::from(u32::MAX)), [0xFE, 0xFF, 0xFF]);
+        assert_eq!(chs_with(0, 255, 63), [0, 1, 0]);
+        assert_eq!(chs_with(2048, 255, 63), [32, 33, 0]);
+        assert_eq!(chs_with(u64::from(u32::MAX), 255, 63), [0xFE, 0xFF, 0xFF]);
     }
 }

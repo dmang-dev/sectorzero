@@ -331,16 +331,10 @@ pub struct DriveWriteReport {
 /// "reading".
 pub type Progress<'a> = &'a mut dyn FnMut(&str, u64, u64);
 
-/// Write the disk inside an image (any container) sector for sector onto a drive,
-/// optionally verifying it.
-pub fn write_image_to_drive(
-    image: &Path,
-    drive: &str,
-    opts: &DriveWriteOptions,
-    progress: Progress,
-) -> Result<DriveWriteReport> {
-    let dpath = Path::new(drive);
-    if !is_device_path(dpath) {
+/// The checks before anything is written to a drive: it is a drive, not the system disk,
+/// and removable unless fixed disks were allowed.
+fn writable_drive(drive: &str, allow_fixed: bool) -> Result<DriveInfo> {
+    if !is_device_path(Path::new(drive)) {
         return Err(Error::Invalid(format!("{drive} is not a drive")));
     }
     let info = drive_info(drive)?.ok_or_else(|| Error::NotFound(format!("drive {drive}")))?;
@@ -350,12 +344,49 @@ pub fn write_image_to_drive(
             info.describe()
         )));
     }
-    if !info.removable && !opts.allow_fixed {
+    if !info.removable && !allow_fixed {
         return Err(Error::Invalid(format!(
             "{} is a fixed disk; confirm that you mean it (allow fixed disks) to write to it",
             info.describe()
         )));
     }
+    Ok(info)
+}
+
+/// Whether two device paths name the same drive, or one is a partition of the other
+/// (`/dev/sdb` and `/dev/sdb1`).
+fn same_drive(a: &str, b: &str) -> bool {
+    let canon = |p: &str| {
+        std::fs::canonicalize(p)
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| p.to_string())
+    };
+    let (a, b) = (normalize(&canon(a)), normalize(&canon(b)));
+    let part_of = |disk: &str, part: &str| {
+        part.strip_prefix(disk).is_some_and(|rest| {
+            let rest = rest.strip_prefix('p').unwrap_or(rest);
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+        })
+    };
+    a == b || (cfg!(unix) && (part_of(&a, &b) || part_of(&b, &a)))
+}
+
+/// Write the disk inside an image (any container, or another drive: a drive-to-drive copy)
+/// sector for sector onto a drive, optionally verifying it.
+pub fn write_image_to_drive(
+    image: &Path,
+    drive: &str,
+    opts: &DriveWriteOptions,
+    progress: Progress,
+) -> Result<DriveWriteReport> {
+    let dpath = Path::new(drive);
+    if is_device_path(image) && same_drive(&image.to_string_lossy(), drive) {
+        return Err(Error::Invalid(format!(
+            "{} and {drive} are the same drive",
+            image.display()
+        )));
+    }
+    let info = writable_drive(drive, opts.allow_fixed)?;
     let mut src = crate::container::open(image, false, opts.member.as_deref())?;
     let size = crate::image::disk_size_of(src.as_mut())?;
     let mut dev = open(dpath, true)?;
@@ -407,6 +438,103 @@ pub fn write_image_to_drive(
     })
 }
 
+// --- wiping a drive -----------------------------------------------------------------------
+
+/// What [`wipe_drive`] writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WipePattern {
+    /// Zeros (one pass).
+    #[default]
+    Zero,
+    /// Pseudo-random data, then zeros (two passes).
+    Random,
+}
+
+/// Options for [`wipe_drive`].
+#[derive(Debug, Clone, Default)]
+pub struct DriveWipeOptions {
+    pub pattern: WipePattern,
+    /// Read the final pass back and check it.
+    pub verify: bool,
+    pub allow_fixed: bool,
+}
+
+/// Overwrite a whole drive (partition tables and file systems included). Progress phases:
+/// "random", "zeroing", "verifying".
+pub fn wipe_drive(
+    drive: &str,
+    opts: &DriveWipeOptions,
+    progress: Progress,
+) -> Result<DriveWriteReport> {
+    let info = writable_drive(drive, opts.allow_fixed)?;
+    let mut dev = open(Path::new(drive), true)?;
+    let size = dev.size();
+    const CHUNK: u64 = 1 << 20;
+    let mut buf = vec![0u8; CHUNK as usize];
+    if opts.pattern == WipePattern::Random {
+        // xorshift64*: fast, and not something a drive can compress or deduplicate.
+        let mut x = crate::volume::new_volume_id() as u64 | 1 | (crate::util::unix_now() << 32);
+        let mut at = 0;
+        while at < size {
+            let n = CHUNK.min(size - at) as usize;
+            for w in buf[..n].chunks_mut(8) {
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                let v = x.wrapping_mul(0x2545_F491_4F6C_DD1D).to_le_bytes();
+                w.copy_from_slice(&v[..w.len()]);
+            }
+            dev.write_at(at, &buf[..n])?;
+            at += n as u64;
+            progress("random", at, size);
+        }
+        dev.sync()?;
+    }
+    buf.fill(0);
+    let mut at = 0;
+    while at < size {
+        let n = CHUNK.min(size - at) as usize;
+        dev.write_at(at, &buf[..n])?;
+        at += n as u64;
+        progress("zeroing", at, size);
+    }
+    dev.sync()?;
+    let mut verified = false;
+    if opts.verify {
+        let mut at = 0;
+        while at < size {
+            let n = CHUNK.min(size - at) as usize;
+            dev.read_at(at, &mut buf[..n])?;
+            if let Some(i) = buf[..n].iter().position(|&b| b != 0) {
+                return Err(Error::Invalid(format!(
+                    "verification failed: byte {} of the drive is not zero",
+                    at + i as u64
+                )));
+            }
+            at += n as u64;
+            progress("verifying", at, size);
+        }
+        verified = true;
+    }
+    Ok(DriveWriteReport {
+        drive: info,
+        bytes: size,
+        verified,
+    })
+}
+
+/// Eject the medium (Zip, Jaz, SuperDisk, magneto-optical, CD…). Windows locks and
+/// dismounts the drive's volumes first; Linux refuses a drive that is mounted. Drives that
+/// cannot eject by themselves (PC floppy drives, card readers) report an error.
+pub fn eject_drive(drive: &str) -> Result<()> {
+    let path = Path::new(drive);
+    if !is_device_path(path) {
+        return Err(Error::Invalid(format!("{drive} is not a drive")));
+    }
+    sys::eject(path).map_err(|e| access_error(path, e))
+}
+
 // --- Windows ------------------------------------------------------------------------------
 
 #[cfg(windows)]
@@ -440,6 +568,8 @@ mod sys {
     const FSCTL_LOCK_VOLUME: u32 = 0x0009_0018;
     const FSCTL_DISMOUNT_VOLUME: u32 = 0x0009_0020;
     const FSCTL_ALLOW_EXTENDED_DASD_IO: u32 = 0x0009_0083;
+    const IOCTL_STORAGE_MEDIA_REMOVAL: u32 = 0x002D_4804;
+    const IOCTL_STORAGE_EJECT_MEDIA: u32 = 0x002D_4808;
     const SHARE_RW: u32 = 0x1 | 0x2;
 
     fn wide(s: &str) -> Vec<u16> {
@@ -799,6 +929,21 @@ mod sys {
     pub(super) fn after_write(f: &File) {
         let _ = ioctl(f, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0);
     }
+
+    /// Lock and dismount like a write does, allow removal, then eject.
+    pub(super) fn eject(path: &Path) -> Result<()> {
+        let (f, _, _, locks) = open(path, true)?;
+        let _ = ioctl(&f, IOCTL_STORAGE_MEDIA_REMOVAL, &[0], 0);
+        let r = ioctl(&f, IOCTL_STORAGE_EJECT_MEDIA, &[], 0);
+        drop(f);
+        drop(locks);
+        r.map(|_| ()).map_err(|e| {
+            Error::Invalid(format!(
+                "{} did not eject its medium ({e}); remove it by hand",
+                path.display()
+            ))
+        })
+    }
 }
 
 // --- Linux and other Unix -------------------------------------------------------------------
@@ -948,6 +1093,32 @@ mod sys {
     }
 
     pub(super) fn after_write(_f: &File) {}
+
+    /// Unlock the door (SCSI disks lock it while open), then eject: SCSI START STOP UNIT
+    /// through CDROMEJECT, which Linux accepts on any SCSI block device, or FDEJECT.
+    pub(super) fn eject(path: &Path) -> Result<()> {
+        use std::os::fd::AsRawFd;
+        const CDROMEJECT: u64 = 0x5309;
+        const SCSI_IOCTL_DOORUNLOCK: u64 = 0x5381;
+        const FDEJECT: u64 = 0x025A;
+        let (f, _, _, _) = open(path, true)?;
+        f.sync_all()?;
+        let fd = f.as_raw_fd();
+        // SAFETY: plain ioctls on an open descriptor; none takes an argument.
+        let ok = unsafe {
+            libc::ioctl(fd, SCSI_IOCTL_DOORUNLOCK as _, 0);
+            libc::ioctl(fd, CDROMEJECT as _, 0) == 0 || libc::ioctl(fd, FDEJECT as _, 0) == 0
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::Invalid(format!(
+                "{} did not eject its medium ({}); remove it by hand",
+                path.display(),
+                std::io::Error::last_os_error()
+            )))
+        }
+    }
 }
 
 #[cfg(test)]
