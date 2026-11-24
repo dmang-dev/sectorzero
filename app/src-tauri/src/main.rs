@@ -10,13 +10,14 @@ use std::sync::Mutex;
 
 use sectorzero_core::{
     BootPlatform, BootSectorEdit, BootSectorInfo, Checksums, ContainerKind, ConvertReport,
-    CreateOptions, DefragReport, Entry, EntryEdit, Error, FLOPPY_FORMATS, FloppyFormat, FsKind,
-    Geometry, Image, IsoBuildOptions, IsoBuildReport, ListingFormat, NewImage, OpenOptions,
-    PartitionScheme, Stats, TruncateReport, Volume, VolumeInfo, build_iso, checksum_file, convert,
-    create_differencing, render_listing, truncate_image,
+    CreateOptions, DefragReport, DriveInfo, DriveWriteOptions, DriveWriteReport, Entry, EntryEdit,
+    Error, FLOPPY_FORMATS, FloppyFormat, FsKind, Geometry, Image, IsoBuildOptions, IsoBuildReport,
+    ListingFormat, NewImage, OpenOptions, PartitionScheme, Stats, TruncateReport, Volume,
+    VolumeInfo, build_iso, checksum_file, convert, convert_with_progress, create_differencing,
+    list_drives, render_listing, truncate_image, write_image_to_drive,
 };
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 
 #[derive(Default)]
 struct Current {
@@ -520,6 +521,91 @@ fn iso_replace(path: String, src: String, state: State<AppState>) -> CmdResult<(
     Ok(image_current(&state, true)?.iso_replace_file(&path, &data)?)
 }
 
+/// The physical drives (USB sticks, memory cards, floppy drives, disks).
+#[tauri::command(async)]
+fn drives() -> CmdResult<Vec<DriveInfo>> {
+    Ok(list_drives()?)
+}
+
+/// Sent to the window as "progress" while a drive is read or written.
+#[derive(Clone, Serialize)]
+struct ProgressEvent {
+    phase: String,
+    done: u64,
+    total: u64,
+}
+
+/// A progress callback that emits at most one event per percent.
+fn emitter(app: &tauri::AppHandle) -> impl FnMut(&str, u64, u64) + '_ {
+    let mut last = (String::new(), u64::MAX);
+    move |phase, done, total| {
+        let pct = done * 100 / total.max(1);
+        if last.0 == phase && last.1 == pct {
+            return;
+        }
+        last = (phase.to_string(), pct);
+        let _ = app.emit(
+            "progress",
+            ProgressEvent {
+                phase: phase.to_string(),
+                done,
+                total,
+            },
+        );
+    }
+}
+
+/// Read a whole drive into a new image file.
+#[tauri::command(async)]
+fn read_drive(
+    drive: String,
+    dest: String,
+    container: Option<String>,
+    dynamic: bool,
+    app: tauri::AppHandle,
+) -> CmdResult<ConvertReport> {
+    let mut progress = emitter(&app);
+    Ok(convert_with_progress(
+        Path::new(&drive),
+        None,
+        Path::new(&dest),
+        container_of(container.as_deref())?,
+        dynamic,
+        true,
+        &mut |done, total| progress("reading", done, total),
+    )?)
+}
+
+/// Write an image onto a drive, replacing everything on it.
+#[tauri::command(async)]
+fn write_drive(
+    image: String,
+    drive: String,
+    verify: bool,
+    allow_fixed: bool,
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> CmdResult<DriveWriteReport> {
+    let member = {
+        let cur = state.0.lock().unwrap();
+        cur.path
+            .as_deref()
+            .filter(|p| *p == Path::new(&image))
+            .and(cur.member.clone())
+    };
+    let mut progress = emitter(&app);
+    Ok(write_image_to_drive(
+        Path::new(&image),
+        &drive,
+        &DriveWriteOptions {
+            verify,
+            allow_fixed,
+            member,
+        },
+        &mut progress,
+    )?)
+}
+
 /// Files copied out of images (for opening or dragging) go under here. The folder is
 /// cleared when the app starts and when it exits.
 fn temp_root() -> PathBuf {
@@ -644,6 +730,9 @@ fn main() {
             open_entry,
             drag_out,
             make_differencing,
+            drives,
+            read_drive,
+            write_drive,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting SectorZero");

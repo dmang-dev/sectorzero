@@ -11,6 +11,7 @@
     <div class="group">
       <button id="btnNew" title="Create a new empty image (Ctrl+N)">New</button>
       <button id="btnOpen" title="Open an image file (Ctrl+O)">Open</button>
+      <button id="btnDrives" title="Open, read or write a USB stick, memory card, floppy or disk">Drives…</button>
       <button id="btnClose" data-needs-image title="Close the image">Close</button>
     </div>
     <div class="group">
@@ -202,7 +203,7 @@
 
   <dialog id="saveAsDlg">
     <form method="dialog">
-      <h2>Save a copy as</h2>
+      <h2 id="saveAsTitle">Save a copy as</h2>
       <label>Container
         <select id="saveContainer">
           <option value="raw">Raw image (.ima / .img)</option>
@@ -289,6 +290,25 @@
       <menu>
         <button value="cancel" id="propsCancel" formnovalidate>Cancel</button>
         <button value="ok" id="propsApply" class="primary">Apply</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="drivesDlg">
+    <form method="dialog">
+      <h2>Drives</h2>
+      <p class="hint" id="drivesHint">Opening, reading and writing drives needs administrator rights (root on Linux).
+        The disk holding the running system is never written.</p>
+      <div class="drives" id="driveList" role="radiogroup" aria-label="Drives"></div>
+      <label class="check"><input type="checkbox" id="driveVerify" checked> Verify after writing (read everything back)</label>
+      <label class="check" id="driveFixedWrap" hidden><input type="checkbox" id="driveFixed"> This is a fixed disk: allow writing to it</label>
+      <menu>
+        <button type="button" id="driveRefresh">Refresh</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate>Close</button>
+        <button value="open" id="driveOpen" title="Browse the drive (read-only)">Open</button>
+        <button value="read" id="driveRead" title="Copy the whole drive into an image file">Read to image…</button>
+        <button value="write" id="driveWrite" class="danger" title="Replace everything on the drive with an image">Write image…</button>
       </menu>
     </form>
   </dialog>

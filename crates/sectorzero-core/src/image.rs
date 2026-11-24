@@ -350,6 +350,9 @@ pub struct ConvertReport {
 
 /// Copy a virtual disk into a new container (e.g. IMA → VHDX, VMDK → IMZ), keeping it
 /// sparse: unallocated and all-zero ranges are not written.
+///
+/// The source can be a physical drive (`\\.\PhysicalDrive1`, `/dev/sdb`): that reads the
+/// drive into an image.
 pub fn convert(
     src: &Path,
     member: Option<&str>,
@@ -358,25 +361,29 @@ pub fn convert(
     dynamic: bool,
     overwrite: bool,
 ) -> Result<ConvertReport> {
+    convert_with_progress(src, member, dst, kind, dynamic, overwrite, &mut |_, _| {})
+}
+
+/// [`convert`], reporting (bytes done, total) as it copies.
+pub fn convert_with_progress(
+    src: &Path,
+    member: Option<&str>,
+    dst: &Path,
+    kind: Option<ContainerKind>,
+    dynamic: bool,
+    overwrite: bool,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<ConvertReport> {
     if same_file(src, dst) {
         return Err(Error::Invalid(
             "source and destination are the same file".into(),
         ));
     }
     let mut from = container::open(src, false, member)?;
-    let mut size = from.size();
-    // A truncated WinImage image still converts at its full size.
-    let mut s0 = [0u8; 512];
-    from.read_at(0, &mut s0)?;
-    if partition::looks_like_fat_boot_sector(&s0)
-        && let Ok(b) = fatraw::Bpb::parse(&s0)
-    {
-        size = size.max(b.total_sectors * b.bps);
-    }
-    let size = round_up(size, 512);
+    let size = disk_size_of(from.as_mut())?;
     let kind = kind.unwrap_or_else(|| ContainerKind::from_path(dst));
     let mut to = container::create(dst, kind, size, dynamic, overwrite)?;
-    let result = container::copy_sparse(from.as_mut(), to.as_mut(), size);
+    let result = container::copy_sparse_progress(from.as_mut(), to.as_mut(), size, progress);
     match result {
         Ok(stored) => Ok(ConvertReport {
             container: to.info(),
@@ -389,6 +396,20 @@ pub fn convert(
             Err(e.into())
         }
     }
+}
+
+/// The full size of the disk an image holds, in whole sectors: a truncated floppy or volume
+/// image still counts at the size its boot sector gives.
+pub(crate) fn disk_size_of(from: &mut dyn container::Disk) -> Result<u64> {
+    let mut size = from.size();
+    let mut s0 = [0u8; 512];
+    from.read_at(0, &mut s0)?;
+    if partition::looks_like_fat_boot_sector(&s0)
+        && let Ok(b) = fatraw::Bpb::parse(&s0)
+    {
+        size = size.max(b.total_sectors * b.bps);
+    }
+    Ok(round_up(size, 512))
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {

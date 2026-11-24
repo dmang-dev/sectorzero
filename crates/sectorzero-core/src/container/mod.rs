@@ -82,6 +82,9 @@ pub enum ContainerKind {
     Nrg,
     /// Alcohol 120% CD image: MDS descriptor + MDF data (read-only).
     Mds,
+    /// A physical drive (USB stick, memory card, floppy drive, hard disk), read and written
+    /// sector for sector.
+    Drive,
 }
 
 impl ContainerKind {
@@ -127,6 +130,7 @@ impl ContainerKind {
             ContainerKind::Cue => "CD image (BIN/CUE)",
             ContainerKind::Nrg => "Nero CD image (NRG)",
             ContainerKind::Mds => "Alcohol 120% CD image (MDF/MDS)",
+            ContainerKind::Drive => "Physical drive",
         }
     }
 
@@ -147,6 +151,7 @@ impl ContainerKind {
                 | ContainerKind::Cue
                 | ContainerKind::Nrg
                 | ContainerKind::Mds
+                | ContainerKind::Drive
         )
     }
 }
@@ -207,6 +212,9 @@ pub(crate) fn file_len(file: &mut File) -> io::Result<u64> {
 
 /// Detect the container by content (not extension) and open it.
 pub(crate) fn open(path: &Path, writable: bool, member: Option<&str>) -> Result<Box<dyn Disk>> {
+    if crate::device::is_device_path(path) {
+        return Ok(Box::new(crate::device::open(path, writable)?));
+    }
     let mut file = File::open(path)?;
     let len = file_len(&mut file)?;
     let mut head = [0u8; 4096];
@@ -324,6 +332,11 @@ pub(crate) fn create(
                 kind.name()
             )));
         }
+        ContainerKind::Drive => {
+            return Err(Error::Unsupported(
+                "creating a physical drive (write an image to a drive instead)".into(),
+            ));
+        }
     })
 }
 
@@ -380,6 +393,16 @@ fn same_path(a: &Path, b: &Path) -> bool {
 /// Copy `size` bytes between disks, skipping unallocated and all-zero ranges.
 /// Returns the number of bytes actually written.
 pub(crate) fn copy_sparse(from: &mut dyn Disk, to: &mut dyn Disk, size: u64) -> io::Result<u64> {
+    copy_sparse_progress(from, to, size, &mut |_, _| {})
+}
+
+/// [`copy_sparse`], reporting (bytes done, total) after every chunk.
+pub(crate) fn copy_sparse_progress(
+    from: &mut dyn Disk,
+    to: &mut dyn Disk,
+    size: u64,
+    progress: &mut dyn FnMut(u64, u64),
+) -> io::Result<u64> {
     const CHUNK: u64 = 1024 * 1024;
     let mut buf = vec![0u8; CHUNK as usize];
     let mut stored = 0;
@@ -395,6 +418,7 @@ pub(crate) fn copy_sparse(from: &mut dyn Disk, to: &mut dyn Disk, size: u64) -> 
             }
         }
         at += n;
+        progress(at, size);
     }
     to.sync()?;
     Ok(stored)

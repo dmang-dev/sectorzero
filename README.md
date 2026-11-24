@@ -21,12 +21,12 @@ Windows first. Linux builds come from CI; macOS and other platforms come later.
 |---|---|
 | Containers | Raw sector images (`.ima` `.img` `.vfd` `.flp` `.dsk`, short "truncated" images read as zero-padded), split raw sets (`.001` `.002` …). WinImage IMZ (zip) and WLZ (zip holding several images). VHD fixed, dynamic and differencing, including Virtual PC undo disks (`.vud`). VHDX (dynamic and fixed, with log replay). VMDK monolithicSparse, monolithicFlat and descriptor + extents. VirtualBox VDI (fixed and dynamic). QCOW2 v2/v3 (compressed clusters and backing files read; writes refused for encrypted, snapshotted or zstd images). PC-98 NHD, HDI and FDI. All read/write. CD images: ISO, BIN/CUE (MODE1/MODE2, 2048–2448-byte sectors), Nero NRG and Alcohol MDS/MDF, read-only. |
 | Layout | Bare FAT volumes, MBR disks (primary and logical partitions), GPT disks, ISO 9660 CD/DVD images |
-| Devices | On Linux, block devices such as `/dev/fd0` and `/dev/sdb` open like raw images (checked in a QEMU guest with a virtual floppy and USB stick). Windows drives (`\\.\PhysicalDriveN`, `\\.\A:`) are not supported yet. |
+| Devices | Physical drives (USB sticks, memory cards, floppy drives, disks) open like raw images: `\\.\PhysicalDriveN` or `\\.\A:` on Windows, `/dev/sdb` or `/dev/fd0` on Linux. List them (`s0 drives`), browse them, read a whole drive into any container, and write an image back onto a drive with read-back verification. Writing locks and dismounts the drive's volumes on Windows and refuses mounted drives on Linux; the disk holding the running system is never written, and fixed disks need an explicit confirmation. Needs administrator rights (root on Linux). |
 | File systems | FAT12 / FAT16 / FAT32 with long file names (read/write). ext2, ext3 and ext4 (read/write: extents, 64-bit, flex_bg, metadata checksums, uninitialized groups, hashed folders; the journal must be clean and stays clean; inline data, encryption, bigalloc, quotas and casefolding open read-only). NTFS (read-only, through the `ntfs` crate; compressed and encrypted files are refused). ISO 9660 with Joliet and Rock Ridge names (read-only), El Torito boot catalog |
 | Create | ext2, ext3 or ext4 on any floppy or hard disk size (MBR type 0x83 / GPT Linux filesystem when partitioned). Every standard floppy format (160 KB to 2.88 MB, including DMF and 1.68/1.72 MB); custom layouts (total sectors, sectors per track, heads, cluster size, root entries, FAT count and type, media byte, hidden sectors, drive number), or the layout copied from another image or boot sector; FAT volumes and MBR or GPT hard disk images of any size, in any of the writable containers above; differencing VHDs over an existing VHD |
 | Edit | Inject files and folders, extract, delete, create folders, rename/move. Host file timestamps are kept. File attributes (read-only, hidden, system, archive) and modified/created/accessed dates, also recursively; on ext, read-only and the three times (read-only clears the write permission bits). NTFS and ISO properties are shown read-only. Replace a file inside an ISO in place when the new file fits in the old one's sectors. |
 | Tools | Volume label; boot sector view/edit (OEM name, serial, geometry, hidden sectors, drive number), export, and boot-code import that keeps the BPB; MBR export/import; defragment (with optional free-space clearing); change format / resize, keeping files, dates, attributes, label, serial and boot code; save as another container; truncate unused space off raw images; checksums (CRC-32, Adler-32, MD5, SHA-1, SHA-256) of the disk inside an image (the same for every container), of the image file, or of a file inside it; file lists as text, CSV or HTML; self-extracting images (`s0 sfx`); build ISO images (optionally bootable, BIOS or UEFI); save an ISO's boot image |
-| Desktop app | Everything above, plus double-click to open a file with its default program, and dragging files out to Explorer or the desktop |
+| Desktop app | Everything above (drives through the Drives dialog: open, read to image, write image), plus double-click to open a file with its default program, and dragging files out to Explorer or the desktop |
 
 Verified against other software: Linux (Alpine, in QEMU) checks SectorZero's ext2/ext3/ext4
 images clean with `e2fsck -fn`, mounts them and reads every file, and SectorZero reads
@@ -37,7 +37,8 @@ VMDK sparse/flat, MBR and GPT disks, defragmented and resized images) with byte-
 and SectorZero reads the SDK's VHD and VMDK output. Windows mounts the ISO images. VHDX is
 checked by this project's own tests only so far.
 
-Not yet (see RESEARCH.md §5): physical drives on Windows, encrypted IMZ, exFAT, writing to NTFS,
+Not yet (see RESEARCH.md §5): low-level floppy formatting, drive wiping and drive-to-drive copies,
+encrypted IMZ, exFAT, writing to NTFS,
 writing to ISO images beyond in-place replacement, resizing partitioned disks.
 
 ## Layout
@@ -120,6 +121,9 @@ s0 resize boot.ima -f 2880                   # or -s 32M; files are kept
 s0 convert boot.ima boot.vhdx                # container from the extension, or -c raw|imz|vhd|vhdx|vmdk|vdi|qcow2|nhd|hdi|fdi
 s0 convert game.cue game.iso                 # CD images (BIN/CUE, NRG, MDS/MDF) to plain ISO
 s0 diff base.vhd changes.vud                 # differencing / undo disk; writes go to the new file only
+s0 drives                                    # physical drives (as administrator / root to open them)
+s0 convert \\.\PhysicalDrive2 stick.vhdx      # read a whole drive into an image, with progress
+s0 write-drive stick.vhdx \\.\PhysicalDrive2  # write an image onto a drive and verify it (--allow-fixed for hard disks)
 s0 attrib boot.ima /a.txt --set RH --modified "1995-08-24 09:30"   # -r for folders; no options shows them
 s0 checksum boot.ima                         # disk inside the image; add a path for one file, --file for the file as stored
 s0 ls boot.ima --format html -o list.html    # whole tree; also txt or csv

@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use sectorzero_core::{
-    BootPlatform, BootSectorEdit, Checksums, ContainerKind, CreateOptions, Entry, EntryEdit,
-    FLOPPY_FORMATS, FloppyFormat, FsKind, Geometry, Image, IsoBuildOptions, Layout, ListingFormat,
-    NewImage, OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo, build_iso, checksum_file,
-    convert, create_differencing, probe, render_listing, truncate_image,
+    BootPlatform, BootSectorEdit, Checksums, ContainerKind, CreateOptions, DriveWriteOptions,
+    Entry, EntryEdit, FLOPPY_FORMATS, FloppyFormat, FsKind, Geometry, Image, IsoBuildOptions,
+    Layout, ListingFormat, NewImage, OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo,
+    build_iso, checksum_file, convert_with_progress, create_differencing, drive_info, list_drives,
+    probe, render_listing, truncate_image, write_image_to_drive,
 };
 
 #[derive(Parser)]
@@ -434,7 +435,8 @@ enum Cmd {
         #[command(flatten)]
         spec: FormatSpec,
     },
-    /// Copy an image into another container (e.g. IMA → VHDX, VMDK → IMZ).
+    /// Copy an image into another container (e.g. IMA → VHDX, VMDK → IMZ). With a drive as
+    /// SOURCE (see `s0 drives`), reads the drive into an image.
     Convert {
         source: PathBuf,
         dest: PathBuf,
@@ -542,6 +544,29 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// List the physical drives (USB sticks, memory cards, floppy drives, disks). Their
+    /// paths work wherever an image is expected, and as `s0 convert` sources.
+    Drives,
+    /// Write an image onto a physical drive sector for sector, replacing everything on it,
+    /// then read it back to verify. Needs administrator rights (root on Linux).
+    WriteDrive {
+        /// Image file (any container s0 reads).
+        image: PathBuf,
+        /// Drive path from `s0 drives`, e.g. \\.\PhysicalDrive2, \\.\A: or /dev/sdb.
+        drive: String,
+        /// Image inside a WLZ list.
+        #[arg(long)]
+        member: Option<String>,
+        /// Skip reading the drive back.
+        #[arg(long)]
+        no_verify: bool,
+        /// Allow a fixed (non-removable) disk. The system disk is always refused.
+        #[arg(long)]
+        allow_fixed: bool,
+        /// Do not ask for confirmation.
+        #[arg(short, long)]
+        yes: bool,
+    },
     /// Save the El Torito boot image of an ISO to a file.
     BootImage {
         #[command(flatten)]
@@ -583,9 +608,160 @@ fn write_new(path: &Path, data: &[u8], force: bool) -> Result<()> {
     std::fs::write(path, data).with_context(|| format!("cannot write {}", path.display()))
 }
 
+/// A one-line progress display on stderr (only when stderr is a terminal).
+struct Progress {
+    on: bool,
+    last: u64,
+    shown: bool,
+}
+
+impl Progress {
+    fn new(json: bool) -> Progress {
+        use std::io::IsTerminal;
+        Progress {
+            on: !json && std::io::stderr().is_terminal(),
+            last: u64::MAX,
+            shown: false,
+        }
+    }
+
+    fn show(&mut self, phase: &str, done: u64, total: u64) {
+        if !self.on || total == 0 {
+            return;
+        }
+        let pct = done * 100 / total;
+        if pct == self.last {
+            return;
+        }
+        self.last = pct;
+        self.shown = true;
+        eprint!(
+            "\r{phase} {pct:>3}%  {} / {} MiB   ",
+            done >> 20,
+            total.div_ceil(1 << 20)
+        );
+    }
+
+    fn done(&mut self) {
+        if self.shown {
+            eprintln!();
+            self.shown = false;
+        }
+        self.last = u64::MAX;
+    }
+}
+
+fn confirm(question: &str) -> Result<bool> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        bail!("{question} Pass --yes to confirm without a prompt.");
+    }
+    eprint!("{question} Type yes to continue: ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(line.trim().eq_ignore_ascii_case("yes"))
+}
+
+fn human_size(n: u64) -> String {
+    match n {
+        0 => "-".into(),
+        n if n >= 1 << 30 => format!("{:.1} GiB", n as f64 / f64::from(1u32 << 30)),
+        n if n >= 1 << 20 => format!("{:.1} MiB", n as f64 / f64::from(1u32 << 20)),
+        n => format!("{} KiB", n >> 10),
+    }
+}
+
 fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     match cli.cmd {
+        Cmd::Drives => {
+            let drives = list_drives().context("cannot list drives")?;
+            if json {
+                return print_json(&drives);
+            }
+            if drives.is_empty() {
+                println!("no drives found");
+            }
+            println!(
+                "{:<22} {:>10}  {:<17} {:<10} model",
+                "path", "size", "bus", "volumes"
+            );
+            for d in &drives {
+                let mut bus = d.bus.clone();
+                if d.removable && !matches!(d.bus.as_str(), "USB" | "SD" | "MMC" | "Floppy") {
+                    bus.push_str(" removable");
+                }
+                let mut model = d.model.clone();
+                if d.system {
+                    model.push_str("  [system disk]");
+                }
+                println!(
+                    "{:<22} {:>10}  {:<17} {:<10} {}",
+                    d.path,
+                    if d.media {
+                        human_size(d.size)
+                    } else {
+                        "no medium".into()
+                    },
+                    bus,
+                    d.volumes.join(" "),
+                    model
+                );
+            }
+        }
+        Cmd::WriteDrive {
+            image,
+            drive,
+            member,
+            no_verify,
+            allow_fixed,
+            yes,
+        } => {
+            let info = drive_info(&drive)
+                .context("cannot list drives")?
+                .with_context(|| format!("{drive} is not a drive (see s0 drives)"))?;
+            if !yes
+                && !info.system
+                && !confirm(&format!(
+                    "This replaces everything on {} with {}.",
+                    info.describe(),
+                    image.display()
+                ))?
+            {
+                bail!("cancelled");
+            }
+            let mut bar = Progress::new(json);
+            let mut phase = String::new();
+            let r = write_image_to_drive(
+                &image,
+                &drive,
+                &DriveWriteOptions {
+                    verify: !no_verify,
+                    allow_fixed,
+                    member,
+                },
+                &mut |p, done, total| {
+                    if p != phase {
+                        bar.done();
+                        phase = p.to_string();
+                    }
+                    bar.show(p, done, total)
+                },
+            )
+            .with_context(|| format!("cannot write {} to {drive}", image.display()));
+            bar.done();
+            let r = r?;
+            if json {
+                return print_json(&r);
+            }
+            println!(
+                "wrote {} bytes to {}{}",
+                r.bytes,
+                r.drive.describe(),
+                if r.verified { ", verified" } else { "" }
+            );
+        }
         Cmd::Formats => {
             if json {
                 return print_json(&FLOPPY_FORMATS);
@@ -965,17 +1141,19 @@ fn run(cli: Cli) -> Result<()> {
             member,
             force,
         } => {
-            let r = convert(
+            let mut bar = Progress::new(json);
+            let r = convert_with_progress(
                 &source,
                 member.as_deref(),
                 &dest,
                 container.map(Into::into),
                 !fixed,
                 force,
+                &mut |done, total| bar.show("copying", done, total),
             )
-            .with_context(|| {
-                format!("cannot convert {} to {}", source.display(), dest.display())
-            })?;
+            .with_context(|| format!("cannot convert {} to {}", source.display(), dest.display()));
+            bar.done();
+            let r = r?;
             if json {
                 return print_json(&r);
             }
