@@ -28,7 +28,9 @@ mod volume;
 mod window;
 
 pub use checksum::{Checksums, checksum_file};
-pub use container::{ContainerInfo, ContainerKind, create_differencing};
+pub use container::{
+    ContainerInfo, ContainerKind, create_differencing, set_fallback_password, set_password,
+};
 pub use device::{
     DriveInfo, DriveWipeOptions, DriveWriteOptions, DriveWriteReport, WipePattern, drive_info,
     eject_drive, is_device_path, list_drives, wipe_drive, write_image_to_drive,

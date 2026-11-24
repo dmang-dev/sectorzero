@@ -370,5 +370,22 @@ window.SZ_LOCALES['tr'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Apple bölüm haritası",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standart: disketler, Zip ve diğer kartuşlar)",
-  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Genişletilmiş)"
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Genişletilmiş)",
+  "Encrypt this IMZ image with a password, change its password or remove it": "Bu IMZ görüntüsünü parolayla şifrele, parolasını değiştir veya kaldır",
+  "Password…": "Parola…",
+  "Password (optional)": "Parola (isteğe bağlı)",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "Görüntüyü WinImage'ın yaptığı gibi şifreler (AES). Şifreleme istemiyorsanız boş bırakın.",
+  "Password": "Parola",
+  "{name} is encrypted. Enter its password:": "{name} şifrelenmiş. Parolasını girin:",
+  "Wrong password. Try again.": "Yanlış parola. Yeniden deneyin.",
+  "New password for {name}:": "{name} için yeni parola:",
+  "Password to encrypt {name} with:": "{name} şifrelenirken kullanılacak parola:",
+  "Leave empty to store the image unencrypted.": "Görüntüyü şifresiz saklamak için boş bırakın.",
+  "Encrypts the image the way WinImage does (AES).": "Görüntüyü WinImage'ın yaptığı gibi şifreler (AES).",
+  "Type the password again:": "Parolayı yeniden yazın:",
+  "The passwords do not match.": "Parolalar eşleşmiyor.",
+  "{name} is now encrypted": "{name} artık şifrelenmiş",
+  "{name} is no longer encrypted": "{name} artık şifrelenmiş değil",
+  "Encryption": "Şifreleme",
+  "Password (AES)": "Parola (AES)"
 };

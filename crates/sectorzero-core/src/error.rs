@@ -14,6 +14,11 @@ pub enum Error {
     NotFat(String),
     #[error("{0}")]
     Invalid(String),
+    /// The image is encrypted and no password was given for it.
+    #[error("{0} is encrypted: give its password")]
+    PasswordNeeded(String),
+    #[error("wrong password")]
+    WrongPassword,
     #[error(transparent)]
     Io(#[from] io::Error),
 }

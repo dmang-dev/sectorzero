@@ -101,7 +101,12 @@ Features marked **[Pro]** need the Professional edition.
 
 ### 2.7 Compression and encryption
 - ZIP-compatible compression (zlib) for .IMZ and .WLZ, with a selectable level.
-- Password encryption of IMZ and WLZ: MD5(password) produces a 128-bit key for Rijndael (AES-128). The container layout is undocumented and would need reverse engineering for compatibility.
+- Password encryption of IMZ and WLZ: MD5(password) produces a 128-bit key for Rijndael (AES-128). The layout is undocumented; SectorZero's reading of it (`container/wicrypt.rs`), worked out from files WinImage saved with known passwords and contents, and checked by WinImage opening SectorZero's files:
+  - The member is an ordinary ZIP entry with general-purpose flag bit 0 set, method 8, version 1.0, external attributes 0x20, and two extra fields: `WI` (u32 1, u32 image size) and `SI` (8 bytes, `80 4D 49 52 10 80 00 00` in every file seen). The ZIP CRC is that of the decompressed image; the compressed size is that of the stored bytes.
+  - Key: MD5 of the password in UTF-16LE.
+  - Stored bytes: the raw deflate stream of the image, cut into 32 KiB chunks. Each chunk is zero-padded to a multiple of 16 bytes, encrypted with AES-128-CBC and a zero IV (per chunk), and stored as a u32 length and the ciphertext. A u32 with the deflate bytes in the last chunk ends the data.
+  - When there is more than one chunk, 8 bytes come first: the CRC-32 of the first chunk's plaintext, then the CRC-32 of its ciphertext. WinImage rejects a file whose prefix does not match ("is not image file").
+  - A wrong password shows as a deflate error or a CRC mismatch.
 
 ### 2.8 Self-extracting executables
 - Package one or more images into a Win32 .EXE, optionally encrypted. A **[Pro]** license includes unlimited redistribution.
@@ -136,7 +141,7 @@ Features marked **[Pro]** need the Professional edition.
 |---|---|
 | IMA/IMG/VFD/FLP/DSK (raw) | Almost everything: 7-Zip, mtools, Linux `mount -o loop`, ImDisk, OSFMount, Virtual Floppy Drive, Hyper-V and Virtual PC (as a floppy), VirtualBox, QEMU, 86Box/PCem, DOSBox, dd, Win32 Disk Imager, TotalImage, DiskImageTool |
 | IMZ / WLZ (unencrypted) | Any unzip tool (7-Zip, `unzip`), which yields plain .IMA files. TotalImage reads IMZ. DiskImageTool reads IMZ. |
-| IMZ / WLZ (encrypted) | WinImage only |
+| IMZ / WLZ (encrypted) | WinImage; SectorZero |
 | VHD | Windows built-in (`Mount-DiskImage`, Disk Management), Hyper-V, VirtualBox, qemu-img, 7-Zip, DiscUtils, FATtools, libvhdi |
 | VMDK | VMware, VirtualBox, qemu-img, 7-Zip, DiscUtils, FATtools, libvmdk |
 | ISO | Everything (Windows Explorer, 7-Zip, xorriso, every burner and VM) |
@@ -195,7 +200,7 @@ There is **no open-source program that replaces WinImage end to end.** The piece
 2. **Don't write the file-system and container code from scratch.** DiscUtils (MIT) already does FAT, exFAT and NTFS read/write over VHD, VHDX, VMDK, VDI and raw, plus ISO building. That leaves defrag, resize and geometry change, IMZ/WLZ, batch, the physical-drive and floppy layers, and the UI as the real new work.
 3. **TotalImage is the closest project** (MIT, C#, active), but it is read-only today. One choice is to contribute write support to it instead of forking the effort. Starting fresh is still reasonable if you want a WinImage-style workflow, or if you want to go cross-platform.
 4. **Places to improve on WinImage:** VHDX, VDI and QCOW2; exFAT; NTFS write; cross-platform (Linux/macOS); using Windows' native VHD/VHDX/ISO mounting instead of an unsigned 2013 driver; SHA-256 checksums; scriptable CLI and library APIs.
-5. **Compatibility targets:** IMA/IMG, IMZ and WLZ (easy, since they are just ZIP), WIL, VFD/FLP, VHD and VMDK. Encrypted IMZ and PFR are proprietary and would need reverse engineering, so they are low priority.
+5. **Compatibility targets:** IMA/IMG, IMZ and WLZ (easy, since they are just ZIP), WIL, VFD/FLP, VHD and VMDK. PFR is proprietary and would need reverse engineering, so it is low priority. (Encrypted IMZ/WLZ are now supported; see §2.7.)
 
 ### 5.1 Implementation status (2026-11-22)
 
@@ -348,4 +353,16 @@ images, and Mac-made cartridge images.
 
 Still to do, roughly in order: low-level formatting of physical floppies, batch mode, NTFS
 writing, resizing ext/exFAT/NTFS partitions, converting a boot floppy into a
-bootable hard disk image, encrypted IMZ (proprietary), and the macOS and Android builds.
+bootable hard disk image, and the macOS and Android builds.
+
+Password-encrypted IMZ/WLZ (2026-11-24): read, write, and set/change/remove the password, in
+the engine, `s0` (`--password`, `--encrypt`, `s0 password`) and the desktop app (password
+prompt on open, password in New and Save As, Tools > Password). The format notes are in §2.7.
+Checked against WinImage: SectorZero reads WinImage's encrypted 160 KB, 360 KB and 1.44 MB
+images (one and several chunks) byte for byte, and WinImage opens SectorZero's (one and
+several chunks).
+
+Translations (2026-11-24): engine messages and the CLI are translated into the desktop app's 16
+languages (`crates/sectorzero-i18n`). Keys are the English format strings; engine errors are
+matched against them at display time (a message that fits a key in more than one way stays
+English), and the CLI formats its own text through `t!`.

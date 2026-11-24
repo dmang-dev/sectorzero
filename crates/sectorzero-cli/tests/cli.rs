@@ -4,6 +4,7 @@ use std::process::Command;
 fn s0(args: &[&str]) -> (bool, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_s0"))
         .args(args)
+        .env("SECTORZERO_LANG", "en")
         .output()
         .unwrap();
     let text = format!(
@@ -70,7 +71,11 @@ fn self_extracting_image_round_trip() {
     assert!(ok, "{out}");
 
     let run = |args: &[&str]| {
-        let o = Command::new(&exe).args(args).output().unwrap();
+        let o = Command::new(&exe)
+            .args(args)
+            .env("SECTORZERO_LANG", "en")
+            .output()
+            .unwrap();
         (
             o.status.success(),
             format!(
@@ -92,6 +97,7 @@ fn self_extracting_image_round_trip() {
     assert_eq!(fs::read(&back).unwrap(), fs::read(img).unwrap());
     // Without arguments and without a terminal it explains itself and exits with 2.
     let o = Command::new(&exe)
+        .env("SECTORZERO_LANG", "en")
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
@@ -162,4 +168,25 @@ fn custom_geometry_and_attrib_from_the_command_line() {
         ok && out.contains("2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"),
         "{out}"
     );
+}
+
+/// Messages, engine errors and help follow --lang (and SECTORZERO_LANG); JSON does not.
+#[test]
+fn messages_follow_the_language() {
+    let tmp = tempfile::tempdir().unwrap();
+    let img = tmp.path().join("d.ima");
+    let img = img.to_str().unwrap();
+    let (ok, out) = s0(&["--lang", "de", "new", img, "-f", "1440"]);
+    assert!(ok, "{out}");
+    assert!(!out.contains("created"), "{out}");
+    let (ok, out) = s0(&["--lang", "de", "ls", img, "/nothing"]);
+    assert!(!ok);
+    assert!(!out.contains("not found in image"), "{out}");
+    assert!(out.contains("/nothing"), "{out}");
+    let (_, out) = s0(&["--lang", "de", "--help"]);
+    assert!(!out.contains("Usage:"), "{out}");
+    let (ok, out) = s0(&["--lang", "de", "--json", "info", img]);
+    assert!(ok && out.contains("\"free_bytes\""), "{out}");
+    let (ok, out) = s0(&["--lang", "xx", "info", img]);
+    assert!(!ok && out.contains("unknown language"), "{out}");
 }

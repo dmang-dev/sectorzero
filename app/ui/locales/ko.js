@@ -370,5 +370,22 @@ window.SZ_LOCALES['ko'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Apple 파티션 맵",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS(Mac OS 표준: 플로피, Zip 및 기타 카트리지)",
-  "HFS+ (Mac OS Extended)": "HFS+(Mac OS 확장)"
+  "HFS+ (Mac OS Extended)": "HFS+(Mac OS 확장)",
+  "Encrypt this IMZ image with a password, change its password or remove it": "이 IMZ 이미지를 암호로 암호화하거나 암호를 변경 또는 제거",
+  "Password…": "암호…",
+  "Password (optional)": "암호(선택 사항)",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "WinImage와 같은 방식(AES)으로 이미지를 암호화합니다. 암호화하지 않으려면 비워 두십시오.",
+  "Password": "암호",
+  "{name} is encrypted. Enter its password:": "{name}은(는) 암호화되어 있습니다. 암호를 입력하십시오:",
+  "Wrong password. Try again.": "암호가 잘못되었습니다. 다시 시도하십시오.",
+  "New password for {name}:": "{name}의 새 암호:",
+  "Password to encrypt {name} with:": "{name}을(를) 암호화할 암호:",
+  "Leave empty to store the image unencrypted.": "비워 두면 이미지를 암호화하지 않고 저장합니다.",
+  "Encrypts the image the way WinImage does (AES).": "WinImage와 같은 방식(AES)으로 이미지를 암호화합니다.",
+  "Type the password again:": "암호를 다시 입력하십시오:",
+  "The passwords do not match.": "암호가 일치하지 않습니다.",
+  "{name} is now encrypted": "{name}을(를) 암호화했습니다",
+  "{name} is no longer encrypted": "{name}의 암호화를 해제했습니다",
+  "Encryption": "암호화",
+  "Password (AES)": "암호(AES)"
 };

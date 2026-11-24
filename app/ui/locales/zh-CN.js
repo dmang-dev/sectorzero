@@ -370,5 +370,22 @@ window.SZ_LOCALES['zh-CN'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Apple 分区图",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS（Mac OS 标准：软盘、Zip 及其他盒式磁盘）",
-  "HFS+ (Mac OS Extended)": "HFS+（Mac OS 扩展）"
+  "HFS+ (Mac OS Extended)": "HFS+（Mac OS 扩展）",
+  "Encrypt this IMZ image with a password, change its password or remove it": "用密码加密此 IMZ 映像、更改其密码或取消密码",
+  "Password…": "密码…",
+  "Password (optional)": "密码（可选）",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "以与 WinImage 相同的方式 (AES) 加密映像。留空则不加密。",
+  "Password": "密码",
+  "{name} is encrypted. Enter its password:": "{name} 已加密。请输入其密码：",
+  "Wrong password. Try again.": "密码错误。请重试。",
+  "New password for {name}:": "{name} 的新密码：",
+  "Password to encrypt {name} with:": "用于加密 {name} 的密码：",
+  "Leave empty to store the image unencrypted.": "留空则以不加密方式存储映像。",
+  "Encrypts the image the way WinImage does (AES).": "以与 WinImage 相同的方式 (AES) 加密映像。",
+  "Type the password again:": "再次输入密码：",
+  "The passwords do not match.": "两次输入的密码不一致。",
+  "{name} is now encrypted": "{name} 现已加密",
+  "{name} is no longer encrypted": "{name} 已取消加密",
+  "Encryption": "加密",
+  "Password (AES)": "密码 (AES)"
 };

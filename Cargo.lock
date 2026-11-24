@@ -3417,6 +3417,7 @@ version = "0.1.0"
 dependencies = [
  "drag",
  "sectorzero-core",
+ "sectorzero-i18n",
  "serde",
  "serde_json",
  "tauri",
@@ -3432,6 +3433,7 @@ dependencies = [
  "anyhow",
  "clap",
  "sectorzero-core",
+ "sectorzero-i18n",
  "serde",
  "serde_json",
  "tempfile",
@@ -3458,6 +3460,13 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "sectorzero-i18n"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

@@ -178,6 +178,16 @@ impl Image {
         Ok(matches!(self.fs_name()?, Some("HFS" | "HFS+" | "HFSX")))
     }
 
+    /// Store an IMZ/WLZ image encrypted with `password` (WinImage's password protection),
+    /// or unencrypted with `None`. The archive is rewritten at once.
+    pub fn set_password(&self, password: Option<&str>) -> Result<()> {
+        self.require_writable()?;
+        let mut disk = lock(&self.disk)?;
+        disk.set_password(password)?;
+        disk.sync()?;
+        Ok(())
+    }
+
     /// Set or (with `None` / empty) remove the volume label (FAT, exFAT, ext; HFS volumes
     /// always have a name).
     pub fn set_label(&self, label: Option<&str>) -> Result<()> {

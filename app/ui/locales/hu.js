@@ -370,5 +370,22 @@ window.SZ_LOCALES['hu'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Apple-partíciótábla",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standard: hajlékonylemezek, Zip és más kazetták)",
-  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)"
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)",
+  "Encrypt this IMZ image with a password, change its password or remove it": "Az IMZ-lemezkép titkosítása jelszóval, a jelszó módosítása vagy eltávolítása",
+  "Password…": "Jelszó…",
+  "Password (optional)": "Jelszó (nem kötelező)",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "A WinImage-hez hasonlóan titkosítja a lemezképet (AES). Titkosítás nélküli mentéshez hagyja üresen.",
+  "Password": "Jelszó",
+  "{name} is encrypted. Enter its password:": "{name} titkosított. Adja meg a jelszavát:",
+  "Wrong password. Try again.": "Hibás jelszó. Próbálja újra.",
+  "New password for {name}:": "{name} új jelszava:",
+  "Password to encrypt {name} with:": "Jelszó a titkosításhoz ({name}):",
+  "Leave empty to store the image unencrypted.": "A lemezkép titkosítatlan tárolásához hagyja üresen.",
+  "Encrypts the image the way WinImage does (AES).": "A WinImage-hez hasonlóan titkosítja a lemezképet (AES).",
+  "Type the password again:": "Írja be újra a jelszót:",
+  "The passwords do not match.": "A jelszavak nem egyeznek.",
+  "{name} is now encrypted": "{name} mostantól titkosított",
+  "{name} is no longer encrypted": "{name} már nem titkosított",
+  "Encryption": "Titkosítás",
+  "Password (AES)": "Jelszó (AES)"
 };

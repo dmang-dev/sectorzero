@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use sectorzero_core::{Image, OpenOptions, Volume};
+use sectorzero_i18n::t;
 use serde::{Deserialize, Serialize};
 
 const MAGIC: &[u8; 8] = b"S0SFX\x01\r\n";
@@ -88,15 +89,15 @@ fn stub_len(f: &mut File) -> io::Result<u64> {
 /// Build `out` from this executable and `image`. Returns the size of `out`.
 pub fn create(image: &Path, out: &Path, comment: Option<String>, force: bool) -> Result<u64> {
     Image::open(image, &OpenOptions::default())
-        .with_context(|| format!("cannot open {}", image.display()))?;
+        .with_context(|| t!("cannot open {}", image.display()))?;
     if !force && out.exists() {
-        bail!("{} exists (use --force to replace it)", out.display());
+        bail!(t!("{} exists (use --force to replace it)", out.display()));
     }
-    let exe = std::env::current_exe().context("cannot find this executable")?;
+    let exe = std::env::current_exe().context(t!("cannot find this executable"))?;
     if let (Ok(a), Ok(b)) = (exe.canonicalize(), out.canonicalize())
         && a == b
     {
-        bail!("the output must not be the running executable");
+        bail!(t!("the output must not be the running executable"));
     }
     let manifest = serde_json::to_vec(&Manifest {
         name: image
@@ -109,7 +110,7 @@ pub fn create(image: &Path, out: &Path, comment: Option<String>, force: bool) ->
     let mut src = File::open(&exe)?;
     let stub = stub_len(&mut src)?;
     src.seek(SeekFrom::Start(0))?;
-    let mut dst = File::create(out).with_context(|| format!("cannot write {}", out.display()))?;
+    let mut dst = File::create(out).with_context(|| t!("cannot write {}", out.display()))?;
     io::copy(&mut (&mut src).take(stub), &mut dst)?;
     dst.write_all(&manifest)?;
     let image_len = io::copy(&mut File::open(image)?, &mut dst)?;
@@ -132,15 +133,14 @@ pub fn create(image: &Path, out: &Path, comment: Option<String>, force: bool) ->
 impl Payload {
     fn write_image(&self, dest: &Path, force: bool) -> Result<()> {
         if !force && dest.exists() {
-            bail!("{} exists (use --force to replace it)", dest.display());
+            bail!(t!("{} exists (use --force to replace it)", dest.display()));
         }
         let mut f = File::open(&self.exe)?;
         f.seek(SeekFrom::Start(self.image_offset))?;
-        let mut out =
-            File::create(dest).with_context(|| format!("cannot write {}", dest.display()))?;
+        let mut out = File::create(dest).with_context(|| t!("cannot write {}", dest.display()))?;
         let n = io::copy(&mut f.take(self.image_len), &mut out)?;
         if n != self.image_len {
-            bail!("the packaged image is cut short");
+            bail!(t!("the packaged image is cut short"));
         }
         Ok(())
     }
@@ -158,11 +158,14 @@ impl Payload {
         let vol = Volume::open(&path, &OpenOptions::default())?;
         let s = vol.extract("", dest, force)?;
         println!(
-            "extracted {} file(s), {} folder(s), {} bytes to {}",
-            s.files,
-            s.dirs,
-            s.bytes,
-            dest.display()
+            "{}",
+            t!(
+                "extracted {} file(s), {} folder(s), {} bytes to {}",
+                s.files,
+                s.dirs,
+                s.bytes,
+                dest.display()
+            )
         );
         Ok(())
     }
@@ -187,18 +190,28 @@ impl Payload {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "this program".into());
         println!(
-            "Self-extracting disk image: {} ({} bytes)",
-            self.manifest.name, self.image_len
+            "{}",
+            t!(
+                "Self-extracting disk image: {} ({} bytes)",
+                self.manifest.name,
+                self.image_len
+            )
         );
         if !self.manifest.comment.is_empty() {
             println!("{}", self.manifest.comment);
         }
         println!(
-            "\nUsage:\n  {me} --list                 list the files in the image\n  \
-             {me} --extract <folder>     copy every file out (also /X <folder>)\n  \
-             {me} --write-image <file>   save the disk image itself (also /W:<file>)\n  \
+            "{}",
+            t!(
+                "\nUsage:\n  {} --list                 list the files in the image\n  \
+             {} --extract <folder>     copy every file out (also /X <folder>)\n  \
+             {} --write-image <file>   save the disk image itself (also /W:<file>)\n  \
              add --force to overwrite existing files\n\nMade with SectorZero {}.",
-            self.manifest.version
+                me,
+                me,
+                me,
+                self.manifest.version
+            )
         );
     }
 
@@ -210,9 +223,12 @@ impl Payload {
             .unwrap_or_else(|| "disk".into());
         let base = self.exe.parent().map(Path::to_path_buf).unwrap_or_default();
         println!(
-            "\n  1) extract the files to {}\n  2) save the image as {}\n  q) quit",
-            base.join(&stem).display(),
-            base.join(&self.manifest.name).display()
+            "{}",
+            t!(
+                "\n  1) extract the files to {}\n  2) save the image as {}\n  q) quit",
+                base.join(&stem).display(),
+                base.join(&self.manifest.name).display()
+            )
         );
         print!("> ");
         io::stdout().flush()?;
@@ -223,7 +239,7 @@ impl Payload {
             "2" => {
                 let dest = base.join(&self.manifest.name);
                 self.write_image(&dest, false)?;
-                println!("saved {}", dest.display());
+                println!("{}", t!("saved {}", dest.display()));
             }
             _ => return Ok(0),
         }
@@ -254,14 +270,14 @@ pub fn run(p: Payload) -> i32 {
             "--write-image" => Some(match value_after(i) {
                 Some(f) => p
                     .write_image(&f, force)
-                    .map(|_| println!("saved {}", f.display())),
+                    .map(|_| println!("{}", t!("saved {}", f.display()))),
                 None => Err(anyhow::anyhow!("--write-image needs a file name")),
             }),
             _ if lower.starts_with("/w:") => {
                 let f = PathBuf::from(&a[3..]);
                 Some(
                     p.write_image(&f, force)
-                        .map(|_| println!("saved {}", f.display())),
+                        .map(|_| println!("{}", t!("saved {}", f.display()))),
                 )
             }
             _ => continue,
@@ -279,7 +295,7 @@ pub fn run(p: Payload) -> i32 {
     match result {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            eprintln!("{}", t!("error: {}", crate::error_text(&e)));
             1
         }
     }

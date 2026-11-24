@@ -370,5 +370,22 @@ window.SZ_LOCALES['ja'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Apple パーティションマップ",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS（Mac OS 標準：フロッピー、Zip などのカートリッジ）",
-  "HFS+ (Mac OS Extended)": "HFS+（Mac OS 拡張）"
+  "HFS+ (Mac OS Extended)": "HFS+（Mac OS 拡張）",
+  "Encrypt this IMZ image with a password, change its password or remove it": "この IMZ イメージをパスワードで暗号化、パスワードを変更、またはパスワードを削除",
+  "Password…": "パスワード…",
+  "Password (optional)": "パスワード (省略可)",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "WinImage と同じ方法 (AES) でイメージを暗号化します。暗号化しない場合は空欄のままにしてください。",
+  "Password": "パスワード",
+  "{name} is encrypted. Enter its password:": "{name} は暗号化されています。パスワードを入力してください:",
+  "Wrong password. Try again.": "パスワードが正しくありません。もう一度入力してください。",
+  "New password for {name}:": "{name} の新しいパスワード:",
+  "Password to encrypt {name} with:": "{name} の暗号化に使うパスワード:",
+  "Leave empty to store the image unencrypted.": "空欄にすると、イメージを暗号化せずに保存します。",
+  "Encrypts the image the way WinImage does (AES).": "WinImage と同じ方法 (AES) でイメージを暗号化します。",
+  "Type the password again:": "パスワードをもう一度入力してください:",
+  "The passwords do not match.": "パスワードが一致しません。",
+  "{name} is now encrypted": "{name} を暗号化しました",
+  "{name} is no longer encrypted": "{name} の暗号化を解除しました",
+  "Encryption": "暗号化",
+  "Password (AES)": "パスワード (AES)"
 };

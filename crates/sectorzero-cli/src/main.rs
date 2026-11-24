@@ -5,7 +5,7 @@ mod sfx;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use sectorzero_core::{
     BootPlatform, BootSectorEdit, Checksums, ContainerKind, CreateOptions, DriveWipeOptions,
     DriveWriteOptions, Entry, EntryEdit, FLOPPY_FORMATS, FloppyFormat, ForkMode, FsKind, Geometry,
@@ -14,6 +14,7 @@ use sectorzero_core::{
     checksum_file, convert_with_progress, create_differencing, drive_info, list_drives, probe,
     render_listing, truncate_image, wipe_drive, write_image_to_drive,
 };
+use sectorzero_i18n::{t, tr};
 
 #[derive(Parser)]
 #[command(
@@ -25,6 +26,14 @@ struct Cli {
     /// Print results as JSON.
     #[arg(long, global = true)]
     json: bool,
+    /// Password of encrypted IMZ/WLZ images (WinImage's password protection). "-" reads
+    /// it from the first line of standard input.
+    #[arg(long, global = true, value_name = "PASSWORD")]
+    password: Option<String>,
+    /// Language of messages and help: en, cs, de, es, fr, hu, it, ja, ko, nl, pl, pt-BR, ru,
+    /// tr, uk, zh-CN or zh-TW. Default: SECTORZERO_LANG, LANG or the system's language.
+    #[arg(long, global = true, value_name = "LANG")]
+    lang: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -192,13 +201,13 @@ impl GeometryArgs {
 /// The boot sector of an image, or the contents of a 512-byte `.bin` file.
 fn read_boot_sector(p: &Path) -> Result<Vec<u8>> {
     let len = std::fs::metadata(p)
-        .with_context(|| format!("cannot read {}", p.display()))?
+        .with_context(|| t!("cannot read {}", p.display()))?
         .len();
     if len == 512 {
         return Ok(std::fs::read(p)?);
     }
     Ok(Image::open(p, &OpenOptions::default())
-        .with_context(|| format!("cannot open {}", p.display()))?
+        .with_context(|| t!("cannot open {}", p.display()))?
         .boot_sector()?)
 }
 
@@ -211,7 +220,10 @@ impl FormatSpec {
             (Some(f), _) => match (FloppyFormat::find(f), MediaFormat::find(f)) {
                 (Some(f), _) => NewImage::Floppy(f),
                 (None, Some(m)) => NewImage::Media(m),
-                _ => bail!("unknown format {f:?}; see `s0 formats`"),
+                _ => bail!(t!(
+                    "unknown format {}; see `s0 formats`",
+                    format!("{:?}", f)
+                )),
             },
             (None, Some(s)) => NewImage::Volume {
                 size_bytes: parse_size(s)?,
@@ -221,31 +233,31 @@ impl FormatSpec {
     }
 
     fn custom(&self) -> Result<NewImage> {
-        let mut g = if let Some(p) = &self.like {
-            Geometry::from_boot_sector(&read_boot_sector(p)?)
-                .with_context(|| format!("{} has no usable FAT boot sector", p.display()))?
-        } else if let Some(f) = &self.format {
-            Geometry::from_floppy(
-                FloppyFormat::find(f)
-                    .with_context(|| format!("unknown format {f:?}; see `s0 formats`"))?,
-            )
-        } else {
-            Geometry {
-                total_sectors: 0,
-                sectors_per_track: 32,
-                heads: 64,
-                bytes_per_cluster: 0,
-                root_entries: 0,
-                fats: 2,
-                media: 0xF8,
-                fat_bits: 0,
-                hidden_sectors: 0,
-                drive_number: 0x80,
-            }
-        };
+        let mut g =
+            if let Some(p) = &self.like {
+                Geometry::from_boot_sector(&read_boot_sector(p)?)
+                    .with_context(|| t!("{} has no usable FAT boot sector", p.display()))?
+            } else if let Some(f) = &self.format {
+                Geometry::from_floppy(FloppyFormat::find(f).with_context(|| {
+                    t!("unknown format {}; see `s0 formats`", format!("{:?}", f))
+                })?)
+            } else {
+                Geometry {
+                    total_sectors: 0,
+                    sectors_per_track: 32,
+                    heads: 64,
+                    bytes_per_cluster: 0,
+                    root_entries: 0,
+                    fats: 2,
+                    media: 0xF8,
+                    fat_bits: 0,
+                    hidden_sectors: 0,
+                    drive_number: 0x80,
+                }
+            };
         if let Some(s) = &self.size {
             g.total_sectors =
-                u32::try_from(parse_size(s)? / 512).context("the size is too large for FAT")?;
+                u32::try_from(parse_size(s)? / 512).context(t!("the size is too large for FAT"))?;
         }
         let a = &self.geo;
         if let Some(v) = a.sectors {
@@ -258,7 +270,7 @@ impl FormatSpec {
             g.heads = v;
         }
         if let Some(v) = &a.cluster {
-            g.bytes_per_cluster = u32::try_from(parse_size(v)?).context("cluster size")?;
+            g.bytes_per_cluster = u32::try_from(parse_size(v)?).context(t!("cluster size"))?;
         }
         if let Some(v) = a.root_entries {
             g.root_entries = v;
@@ -279,7 +291,7 @@ impl FormatSpec {
             g.drive_number = v;
         }
         if g.total_sectors == 0 {
-            bail!("a custom format needs --sectors or --size");
+            bail!(t!("a custom format needs --sectors or --size"));
         }
         Ok(NewImage::Custom(g))
     }
@@ -327,6 +339,10 @@ enum Cmd {
         /// Fixed-size VHD/VHDX/VMDK/VDI (default: dynamic, growing as data is written).
         #[arg(long)]
         fixed: bool,
+        /// Save the IMZ image encrypted with this password ("-": read it from standard
+        /// input).
+        #[arg(long, value_name = "PASSWORD")]
+        encrypt: Option<String>,
         /// Replace the file if it exists.
         #[arg(long)]
         force: bool,
@@ -492,8 +508,29 @@ enum Cmd {
         /// Image inside a WLZ list.
         #[arg(long)]
         member: Option<String>,
+        /// Save an IMZ destination encrypted with this password (--password is the
+        /// source's).
+        #[arg(long, value_name = "PASSWORD")]
+        encrypt: Option<String>,
         #[arg(long)]
         force: bool,
+    },
+    /// Encrypt an IMZ/WLZ image with a password, change its password (give the current one
+    /// with --password), or store it unencrypted again.
+    Password {
+        #[command(flatten)]
+        img: Img,
+        /// The new password ("-": read it from standard input).
+        #[arg(
+            long,
+            value_name = "PASSWORD",
+            conflicts_with = "remove",
+            required_unless_present = "remove"
+        )]
+        set: Option<String>,
+        /// Store the image unencrypted.
+        #[arg(long)]
+        remove: bool,
     },
     /// Build an ISO 9660 + Joliet image from a folder, optionally bootable (El Torito).
     Iso {
@@ -655,13 +692,19 @@ fn main() {
     let code = std::thread::Builder::new()
         .stack_size(16 << 20)
         .spawn(|| {
+            sectorzero_i18n::init();
             if let Some(payload) = sfx::detect() {
                 return sfx::run(payload);
             }
-            match run(Cli::parse()) {
+            if let Some(lang) = lang_arg() {
+                sectorzero_i18n::set_language(&lang);
+            }
+            let matches = localize(Cli::command()).get_matches();
+            let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+            match run(cli) {
                 Ok(()) => 0,
                 Err(e) => {
-                    eprintln!("s0: {e:#}");
+                    eprintln!("s0: {}", error_text(&e));
                     1
                 }
             }
@@ -672,21 +715,114 @@ fn main() {
     std::process::exit(code);
 }
 
+/// `--lang` from the command line, read before clap so that the help is translated too.
+fn lang_arg() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--" {
+            break;
+        }
+        if a == "--lang" {
+            return args.next();
+        }
+        if let Some(v) = a.strip_prefix("--lang=") {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// The command line with its help in the current language: descriptions, headings and
+/// clap's own help and version flags. Clap's error messages stay English.
+fn localize(mut cmd: clap::Command) -> clap::Command {
+    if sectorzero_i18n::language() == "en" {
+        return cmd;
+    }
+    cmd.build();
+    localize_built(cmd)
+}
+
+fn localize_built(cmd: clap::Command) -> clap::Command {
+    fn leak(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+    let mut cmd = cmd
+        .help_template(format!(
+            "{{before-help}}{{about-with-newline}}\n{} {{usage}}\n\n{{all-args}}{{after-help}}",
+            t!("Usage:")
+        ))
+        .subcommand_help_heading(leak(t!("Commands")))
+        .mut_args(|a| {
+            let help = a.get_help().map(|h| tr(&h.to_string()));
+            let long = a.get_long_help().map(|h| tr(&h.to_string()));
+            let heading = match a.get_help_heading() {
+                Some(h) => tr(h),
+                None if a.is_positional() => t!("Arguments"),
+                None => t!("Options"),
+            };
+            let mut a = a.help_heading(leak(heading));
+            if let Some(h) = help {
+                a = a.help(h);
+            }
+            if let Some(h) = long {
+                a = a.long_help(h);
+            }
+            a
+        })
+        .mut_subcommands(localize_built);
+    if let Some(about) = cmd.get_about().map(|a| tr(&a.to_string())) {
+        cmd = cmd.about(about);
+    }
+    if let Some(about) = cmd.get_long_about().map(|a| tr(&a.to_string())) {
+        cmd = cmd.long_about(about);
+    }
+    cmd
+}
+
+/// Every help text of the command line: the keys its translations need.
+#[cfg(test)]
+fn help_keys() -> Vec<String> {
+    fn walk(cmd: &clap::Command, out: &mut Vec<String>) {
+        let mut add = |s: Option<String>| {
+            if let Some(s) = s.filter(|s| !s.trim().is_empty())
+                && !out.contains(&s)
+            {
+                out.push(s);
+            }
+        };
+        add(cmd.get_about().map(|a| a.to_string()));
+        add(cmd.get_long_about().map(|a| a.to_string()));
+        for a in cmd.get_arguments() {
+            add(a.get_help().map(|h| h.to_string()));
+            add(a.get_long_help().map(|h| h.to_string()));
+            add(a.get_help_heading().map(str::to_string));
+        }
+        for s in cmd.get_subcommands() {
+            walk(s, out);
+        }
+    }
+    let mut cmd = Cli::command();
+    cmd.build();
+    let mut out = Vec::new();
+    walk(&cmd, &mut out);
+    out
+}
+
 fn open(img: &Img, writable: bool) -> Result<Volume> {
     Volume::open(&img.image, &img.opts(writable))
-        .with_context(|| format!("cannot open {}", img.image.display()))
+        .with_context(|| t!("cannot open {}", img.image.display()))
 }
 
 fn open_image(img: &Img, writable: bool) -> Result<Image> {
     Image::open(&img.image, &img.opts(writable))
-        .with_context(|| format!("cannot open {}", img.image.display()))
+        .with_context(|| t!("cannot open {}", img.image.display()))
 }
 
 fn write_new(path: &Path, data: &[u8], force: bool) -> Result<()> {
     if !force && path.exists() {
-        bail!("{} exists (use --force to replace it)", path.display());
+        bail!(t!("{} exists (use --force to replace it)", path.display()));
     }
-    std::fs::write(path, data).with_context(|| format!("cannot write {}", path.display()))
+    std::fs::write(path, data).with_context(|| t!("cannot write {}", path.display()))
 }
 
 /// A one-line progress display on stderr (only when stderr is a terminal).
@@ -716,6 +852,14 @@ impl Progress {
         }
         self.last = pct;
         self.shown = true;
+        let phase = match phase {
+            "writing" => t!("writing"),
+            "verifying" => t!("verifying"),
+            "reading" => t!("reading"),
+            "random" => t!("random data"),
+            "zeroing" => t!("zeroing"),
+            other => other.to_string(),
+        };
         eprint!(
             "\r{phase} {pct:>3}%  {} / {} MiB   ",
             done >> 20,
@@ -735,9 +879,9 @@ impl Progress {
 fn confirm(question: &str) -> Result<bool> {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
-        bail!("{question} Pass --yes to confirm without a prompt.");
+        bail!(t!("{} Pass --yes to confirm without a prompt.", question));
     }
-    eprint!("{question} Type yes to continue: ");
+    eprint!("{}", t!("{} Type yes to continue: ", question));
     std::io::stderr().flush()?;
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line)?;
@@ -747,22 +891,52 @@ fn confirm(question: &str) -> Result<bool> {
 fn human_size(n: u64) -> String {
     match n {
         0 => "-".into(),
-        n if n >= 1 << 30 => format!("{:.1} GiB", n as f64 / f64::from(1u32 << 30)),
-        n if n >= 1 << 20 => format!("{:.1} MiB", n as f64 / f64::from(1u32 << 20)),
-        n => format!("{} KiB", n >> 10),
+        n if n >= 1 << 30 => t!("{} GiB", format!("{:.1}", n as f64 / f64::from(1u32 << 30))),
+        n if n >= 1 << 20 => t!("{} MiB", format!("{:.1}", n as f64 / f64::from(1u32 << 20))),
+        n => t!("{} KiB", n >> 10),
+    }
+}
+
+/// A password argument; "-" reads one line from standard input.
+fn password_arg(value: Option<String>) -> Result<Option<String>> {
+    match value.as_deref() {
+        Some("-") => {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .context(t!("cannot read the password from standard input"))?;
+            let pw = line.trim_end_matches(['\r', '\n']).to_string();
+            if pw.is_empty() {
+                bail!(t!("the password on standard input is empty"));
+            }
+            Ok(Some(pw))
+        }
+        Some("") => bail!(t!("the password is empty")),
+        _ => Ok(value),
     }
 }
 
 fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
+    if let Some(l) = &cli.lang
+        && sectorzero_i18n::matching(l).is_none()
+    {
+        let codes: Vec<&str> = sectorzero_i18n::LANGUAGES.iter().map(|(c, _)| *c).collect();
+        bail!(t!(
+            "unknown language {}; use one of {}",
+            l,
+            codes.join(", ")
+        ));
+    }
+    sectorzero_core::set_fallback_password(password_arg(cli.password)?.as_deref());
     match cli.cmd {
         Cmd::Drives => {
-            let drives = list_drives().context("cannot list drives")?;
+            let drives = list_drives().context(t!("cannot list drives"))?;
             if json {
                 return print_json(&drives);
             }
             if drives.is_empty() {
-                println!("no drives found");
+                println!("{}", t!("no drives found"));
             }
             println!(
                 "{:<22} {:>10}  {:<17} {:<10} model",
@@ -771,11 +945,11 @@ fn run(cli: Cli) -> Result<()> {
             for d in &drives {
                 let mut bus = d.bus.clone();
                 if d.removable && !matches!(d.bus.as_str(), "USB" | "SD" | "MMC" | "Floppy") {
-                    bus.push_str(" removable");
+                    bus.push_str(&t!(" removable"));
                 }
                 let mut model = d.model.clone();
                 if d.system {
-                    model.push_str("  [system disk]");
+                    model.push_str(&t!("  [system disk]"));
                 }
                 println!(
                     "{:<22} {:>10}  {:<17} {:<10} {}",
@@ -783,7 +957,7 @@ fn run(cli: Cli) -> Result<()> {
                     if d.media {
                         human_size(d.size)
                     } else {
-                        "no medium".into()
+                        t!("no medium")
                     },
                     bus,
                     d.volumes.join(" "),
@@ -800,17 +974,17 @@ fn run(cli: Cli) -> Result<()> {
             yes,
         } => {
             let info = drive_info(&drive)
-                .context("cannot list drives")?
-                .with_context(|| format!("{drive} is not a drive (see s0 drives)"))?;
+                .context(t!("cannot list drives"))?
+                .with_context(|| t!("{} is not a drive (see s0 drives)", drive))?;
             if !yes
                 && !info.system
-                && !confirm(&format!(
+                && !confirm(&t!(
                     "This replaces everything on {} with {}.",
-                    info.describe(),
+                    tr(&info.describe()),
                     image.display()
                 ))?
             {
-                bail!("cancelled");
+                bail!(t!("cancelled"));
             }
             let mut bar = Progress::new(json);
             let mut phase = String::new();
@@ -830,18 +1004,27 @@ fn run(cli: Cli) -> Result<()> {
                     bar.show(p, done, total)
                 },
             )
-            .with_context(|| format!("cannot write {} to {drive}", image.display()));
+            .with_context(|| t!("cannot write {} to {}", image.display(), drive));
             bar.done();
             let r = r?;
             if json {
                 return print_json(&r);
             }
-            println!(
-                "wrote {} bytes to {}{}",
-                r.bytes,
-                r.drive.describe(),
-                if r.verified { ", verified" } else { "" }
-            );
+            if r.verified {
+                println!(
+                    "{}",
+                    t!(
+                        "wrote {} bytes to {}, verified",
+                        r.bytes,
+                        tr(&r.drive.describe())
+                    )
+                );
+            } else {
+                println!(
+                    "{}",
+                    t!("wrote {} bytes to {}", r.bytes, tr(&r.drive.describe()))
+                );
+            }
         }
         Cmd::WipeDrive {
             drive,
@@ -851,16 +1034,16 @@ fn run(cli: Cli) -> Result<()> {
             yes,
         } => {
             let info = drive_info(&drive)
-                .context("cannot list drives")?
-                .with_context(|| format!("{drive} is not a drive (see s0 drives)"))?;
+                .context(t!("cannot list drives"))?
+                .with_context(|| t!("{} is not a drive (see s0 drives)", drive))?;
             if !yes
                 && !info.system
-                && !confirm(&format!(
+                && !confirm(&t!(
                     "This erases everything on {}, partitions included.",
-                    info.describe()
+                    tr(&info.describe())
                 ))?
             {
-                bail!("cancelled");
+                bail!(t!("cancelled"));
             }
             let mut bar = Progress::new(json);
             let mut phase = String::new();
@@ -883,24 +1066,32 @@ fn run(cli: Cli) -> Result<()> {
                     bar.show(p, done, total)
                 },
             )
-            .with_context(|| format!("cannot wipe {drive}"));
+            .with_context(|| t!("cannot wipe {}", drive));
             bar.done();
             let r = r?;
             if json {
                 return print_json(&r);
             }
-            println!(
-                "wiped {} bytes on {}{}",
-                r.bytes,
-                r.drive.describe(),
-                if r.verified { ", verified" } else { "" }
-            );
+            if r.verified {
+                println!(
+                    "{}",
+                    t!(
+                        "wiped {} bytes on {}, verified",
+                        r.bytes,
+                        tr(&r.drive.describe())
+                    )
+                );
+            } else {
+                println!(
+                    "{}",
+                    t!("wiped {} bytes on {}", r.bytes, tr(&r.drive.describe()))
+                );
+            }
         }
         Cmd::Eject { drive } => {
-            sectorzero_core::eject_drive(&drive)
-                .with_context(|| format!("cannot eject {drive}"))?;
+            sectorzero_core::eject_drive(&drive).with_context(|| t!("cannot eject {}", drive))?;
             if !json {
-                println!("ejected {drive}");
+                println!("{}", t!("ejected {}", drive));
             }
         }
         Cmd::Formats => {
@@ -932,8 +1123,8 @@ fn run(cli: Cli) -> Result<()> {
                     m.size_bytes(),
                     m.sector_size,
                     match m.layout {
-                        MediaLayout::Superfloppy => "no partition table".to_string(),
-                        MediaLayout::Mbr { slot, start } => format!("MBR slot {slot} at {start}"),
+                        MediaLayout::Superfloppy => t!("no partition table"),
+                        MediaLayout::Mbr { slot, start } => t!("MBR slot {} at {}", slot, start),
                     },
                     m.name
                 );
@@ -947,8 +1138,12 @@ fn run(cli: Cli) -> Result<()> {
             table,
             container,
             fixed,
+            encrypt,
             force,
         } => {
+            if let Some(pw) = password_arg(encrypt)? {
+                sectorzero_core::set_password(&image, Some(&pw));
+            }
             let opts = CreateOptions {
                 label,
                 fs: match fs {
@@ -971,19 +1166,22 @@ fn run(cli: Cli) -> Result<()> {
                 overwrite: force,
             };
             Volume::create(&image, spec.spec()?, &opts)
-                .with_context(|| format!("cannot create {}", image.display()))?;
+                .with_context(|| t!("cannot create {}", image.display()))?;
             let info = Volume::open(&image, &OpenOptions::default())?.info()?;
             if json {
                 return print_json(&info);
             }
             println!(
-                "created {} ({}, {}, {} bytes free)",
-                image.display(),
-                info.container.kind.name(),
-                info.floppy_format
-                    .or(info.media_format)
-                    .unwrap_or(&info.fs_type),
-                info.free_bytes
+                "{}",
+                t!(
+                    "created {} ({}, {}, {} bytes free)",
+                    image.display(),
+                    tr(info.container.kind.name()),
+                    info.floppy_format
+                        .or(info.media_format)
+                        .unwrap_or(&info.fs_type),
+                    info.free_bytes
+                )
             );
         }
         Cmd::Info(img) => {
@@ -997,26 +1195,36 @@ fn run(cli: Cli) -> Result<()> {
                     }
                 };
             }
-            println!("image        {}", img.image.display());
-            println!(
-                "container    {} ({}), {} bytes",
-                container.kind.name(),
-                container.variant,
-                container.virtual_size
+            row(&t!("image"), img.image.display());
+            row(
+                &t!("container"),
+                t!(
+                    "{} ({}), {} bytes",
+                    tr(container.kind.name()),
+                    container.variant,
+                    container.virtual_size
+                ),
             );
             if let Some(m) = &container.member {
-                println!(
-                    "member       {m} ({} image(s) in the archive)",
-                    container.members.len()
+                row(
+                    &t!("member"),
+                    t!(
+                        "{} ({} image(s) in the archive)",
+                        m,
+                        container.members.len()
+                    ),
                 );
             }
             if let Some(c) = &container.comment {
-                println!("comment      {c}");
+                row(&t!("comment"), c);
+            }
+            if container.encrypted {
+                row(&t!("encryption"), t!("password (AES-128)"));
             }
             print_layout(&layout);
             match vol {
                 Ok(v) => print_volume(&v.info()?),
-                Err(e) => println!("volume       not readable: {e:#}"),
+                Err(e) => row(&t!("volume"), t!("not readable: {}", error_text(&e))),
             }
         }
         Cmd::Ls {
@@ -1039,7 +1247,7 @@ fn run(cli: Cli) -> Result<()> {
                     Some(o) => {
                         write_new(&o, text.as_bytes(), force)?;
                         if !json {
-                            println!("wrote {}", o.display());
+                            println!("{}", t!("wrote {}", o.display()));
                         }
                         Ok(())
                     }
@@ -1078,10 +1286,10 @@ fn run(cli: Cli) -> Result<()> {
                 add(
                     &mut total,
                     vol.extract_with(p, &out, force, forks)
-                        .with_context(|| format!("extracting {p:?}"))?,
+                        .with_context(|| t!("extracting {}", format!("{:?}", p)))?,
                 );
             }
-            report(json, "extracted", &total, Some(&out))?;
+            report(json, Verb::Extracted, &total, Some(&out))?;
         }
         Cmd::Inject {
             img,
@@ -1096,14 +1304,14 @@ fn run(cli: Cli) -> Result<()> {
                 add(
                     &mut total,
                     vol.inject_with(f, &to, force, forks.mode())
-                        .with_context(|| format!("injecting {}", f.display()))?,
+                        .with_context(|| t!("injecting {}", f.display()))?,
                 );
             }
             let free = vol.info()?.free_bytes;
             vol.close()?;
-            report(json, "injected", &total, None)?;
+            report(json, Verb::Injected, &total, None)?;
             if !json {
-                println!("{free} bytes free");
+                println!("{}", t!("{} bytes free", free));
             }
         }
         Cmd::Mkdir { img, path } => {
@@ -1122,16 +1330,30 @@ fn run(cli: Cli) -> Result<()> {
                 add(
                     &mut total,
                     vol.remove(p, recursive)
-                        .with_context(|| format!("removing {p:?}"))?,
+                        .with_context(|| t!("removing {}", format!("{:?}", p)))?,
                 );
             }
             vol.close()?;
-            report(json, "removed", &total, None)?;
+            report(json, Verb::Removed, &total, None)?;
         }
         Cmd::Mv { img, from, to } => {
             let vol = open(&img, true)?;
             vol.rename(&from, &to)?;
             vol.close()?;
+        }
+        Cmd::Password { img, set, remove } => {
+            let new = if remove { None } else { password_arg(set)? };
+            open_image(&img, true)?
+                .set_password(new.as_deref())
+                .with_context(|| t!("cannot change the password of {}", img.image.display()))?;
+            if json {
+                return print_json(&serde_json::json!({ "encrypted": new.is_some() }));
+            }
+            if new.is_some() {
+                println!("{}", t!("{} is now encrypted", img.image.display()));
+            } else {
+                println!("{}", t!("{} is now unencrypted", img.image.display()));
+            }
         }
         Cmd::Label { img, label, clear } => {
             if label.is_some() || clear {
@@ -1141,7 +1363,7 @@ fn run(cli: Cli) -> Result<()> {
             if json {
                 return print_json(&serde_json::json!({ "label": l }));
             }
-            println!("{}", if l.is_empty() { "(no label)" } else { &l });
+            println!("{}", if l.is_empty() { t!("(no label)") } else { l });
         }
         Cmd::Boot {
             img,
@@ -1171,12 +1393,13 @@ fn run(cli: Cli) -> Result<()> {
                 || edit.hidden_sectors.is_some()
                 || edit.drive_number.is_some();
             if mbr && editing {
-                bail!("--oem/--serial/--heads/… edit the volume boot sector, not the MBR");
+                bail!(t!(
+                    "--oem/--serial/--heads/… edit the volume boot sector, not the MBR"
+                ));
             }
             let image = open_image(&img, import.is_some() || editing)?;
             if let Some(f) = &import {
-                let data =
-                    std::fs::read(f).with_context(|| format!("cannot read {}", f.display()))?;
+                let data = std::fs::read(f).with_context(|| t!("cannot read {}", f.display()))?;
                 if mbr {
                     image.import_mbr_code(&data)?
                 } else {
@@ -1194,7 +1417,7 @@ fn run(cli: Cli) -> Result<()> {
                 };
                 write_new(f, &sector, force)?;
                 if !json {
-                    println!("saved {}", f.display());
+                    println!("{}", t!("saved {}", f.display()));
                 }
             }
             if mbr {
@@ -1206,58 +1429,70 @@ fn run(cli: Cli) -> Result<()> {
                         "layout": image.layout(),
                     }));
                 }
-                println!(
-                    "disk signature {:08X}",
-                    u32::from_le_bytes(s[440..444].try_into().unwrap())
-                );
-                println!(
-                    "boot code      {}",
-                    if s[..440].iter().any(|&b| b != 0) {
-                        "present"
-                    } else {
-                        "none"
-                    }
-                );
+                let rows = [
+                    (
+                        t!("disk signature"),
+                        format!(
+                            "{:08X}",
+                            u32::from_le_bytes(s[440..444].try_into().unwrap())
+                        ),
+                    ),
+                    (
+                        t!("boot code"),
+                        if s[..440].iter().any(|&b| b != 0) {
+                            t!("present")
+                        } else {
+                            t!("none")
+                        },
+                    ),
+                ];
+                for (k, v) in rows {
+                    println!("{}{v}", pad(&k, 16));
+                }
                 print_layout(image.layout());
             } else {
                 let b = image.boot_sector_info()?;
                 if json {
                     return print_json(&b);
                 }
-                let rows: [(&str, String); 19] = [
-                    ("jump", b.jump),
-                    ("oem name", format!("{:?}", b.oem_name)),
-                    ("bytes/sector", b.bytes_per_sector.to_string()),
-                    ("sectors/cluster", b.sectors_per_cluster.to_string()),
-                    ("reserved sectors", b.reserved_sectors.to_string()),
-                    ("FATs", b.fats.to_string()),
-                    ("root entries", b.root_entries.to_string()),
-                    ("total sectors", b.total_sectors.to_string()),
-                    ("media", b.media),
-                    ("sectors/FAT", b.sectors_per_fat.to_string()),
-                    ("sectors/track", b.sectors_per_track.to_string()),
-                    ("heads", b.heads.to_string()),
-                    ("hidden sectors", b.hidden_sectors.to_string()),
-                    ("drive number", b.drive_number),
-                    ("serial", b.volume_id.unwrap_or_else(|| "-".into())),
-                    ("label", b.label.unwrap_or_else(|| "-".into())),
-                    ("fs type field", b.fs_type.unwrap_or_else(|| "-".into())),
-                    ("file system", b.fat_type),
+                let rows: [(String, String); 19] = [
+                    (t!("jump"), b.jump),
+                    (t!("oem name"), format!("{:?}", b.oem_name)),
+                    (t!("bytes/sector"), b.bytes_per_sector.to_string()),
+                    (t!("sectors/cluster"), b.sectors_per_cluster.to_string()),
+                    (t!("reserved sectors"), b.reserved_sectors.to_string()),
+                    (t!("FATs"), b.fats.to_string()),
+                    (t!("root entries"), b.root_entries.to_string()),
+                    (t!("total sectors"), b.total_sectors.to_string()),
+                    (t!("media"), b.media),
+                    (t!("sectors/FAT"), b.sectors_per_fat.to_string()),
+                    (t!("sectors/track"), b.sectors_per_track.to_string()),
+                    (t!("heads"), b.heads.to_string()),
+                    (t!("hidden sectors"), b.hidden_sectors.to_string()),
+                    (t!("drive number"), b.drive_number),
+                    (t!("serial"), b.volume_id.unwrap_or_else(|| "-".into())),
+                    (t!("label"), b.label.unwrap_or_else(|| "-".into())),
+                    (t!("fs type field"), b.fs_type.unwrap_or_else(|| "-".into())),
+                    (t!("file system"), b.fat_type),
                     (
-                        "boot code",
+                        t!("boot code"),
                         format!(
                             "{}{}",
-                            if b.has_boot_code { "present" } else { "none" },
-                            if b.signature_55aa {
-                                ""
+                            if b.has_boot_code {
+                                t!("present")
                             } else {
-                                ", no 55AA signature"
+                                t!("none")
+                            },
+                            if b.signature_55aa {
+                                String::new()
+                            } else {
+                                t!(", no 55AA signature")
                             }
                         ),
                     ),
                 ];
                 for (k, v) in rows {
-                    println!("{k:<17} {v}");
+                    println!("{}{v}", pad(&k, 18));
                 }
             }
         }
@@ -1275,14 +1510,30 @@ fn run(cli: Cli) -> Result<()> {
             if json {
                 return print_json(&r);
             }
-            println!("files/folders {} / {}", r.files, r.dirs);
-            println!("fragmented    {} ({} extents)", r.fragmented, r.fragments);
+            let w = 14;
+            println!("{}{} / {}", pad(&t!("files/folders"), w), r.files, r.dirs);
             println!(
-                "clusters      {} used, {} free, {} lost ({} bytes each)",
-                r.used_clusters, r.free_clusters, r.lost_clusters, r.cluster_size
+                "{}{}",
+                pad(&t!("fragmented"), w),
+                t!("{} ({} extents)", r.fragmented, r.fragments)
+            );
+            println!(
+                "{}{}",
+                pad(&t!("clusters"), w),
+                t!(
+                    "{} used, {} free, {} lost ({} bytes each)",
+                    r.used_clusters,
+                    r.free_clusters,
+                    r.lost_clusters,
+                    r.cluster_size
+                )
             );
             if !analyze {
-                println!("moved         {} clusters", r.moved_clusters);
+                println!(
+                    "{}{}",
+                    pad(&t!("moved"), w),
+                    t!("{} clusters", r.moved_clusters)
+                );
             }
         }
         Cmd::Resize {
@@ -1292,7 +1543,7 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let partitioned = matches!(
                 sectorzero_core::probe(&img.image)
-                    .with_context(|| format!("cannot open {}", img.image.display()))?
+                    .with_context(|| t!("cannot open {}", img.image.display()))?
                     .1,
                 Layout::Mbr(_) | Layout::Gpt(_)
             );
@@ -1303,46 +1554,62 @@ fn run(cli: Cli) -> Result<()> {
                     spec.like.is_some() || spec.geo.any(),
                 ) {
                     (Some(s), None, false) => parse_size(s)?,
-                    _ => bail!(
+                    _ => bail!(t!(
                         "{} is a partitioned disk: give its new size with --size",
                         img.image.display()
-                    ),
+                    )),
                 };
                 let r = Volume::resize_disk(&img.image, &img.opts(true), size, !keep_partitions)
-                    .with_context(|| format!("cannot resize {}", img.image.display()))?;
+                    .with_context(|| t!("cannot resize {}", img.image.display()))?;
                 if json {
                     return print_json(&r);
                 }
                 print!(
-                    "resized the disk from {} to {} bytes",
-                    r.old_size, r.new_size
+                    "{}",
+                    t!(
+                        "resized the disk from {} to {} bytes",
+                        r.old_size,
+                        r.new_size
+                    )
                 );
                 match (&r.partition, &r.stats) {
                     (Some(p), Some(s)) => println!(
-                        "; partition {} from {} to {} bytes, rebuilt with {} file(s), {} folder(s)",
-                        p.index, p.old_bytes, p.new_bytes, s.files, s.dirs
+                        "{}",
+                        t!(
+                            "; partition {} from {} to {} bytes, rebuilt with {} file(s), {} folder(s)",
+                            p.index,
+                            p.old_bytes,
+                            p.new_bytes,
+                            s.files,
+                            s.dirs
+                        )
                     ),
-                    _ => println!("; partitions unchanged"),
+                    _ => println!("{}", t!("; partitions unchanged")),
                 }
                 return Ok(());
             }
             if keep_partitions {
-                bail!("--keep-partitions only applies to partitioned (MBR/GPT) disks");
+                bail!(t!(
+                    "--keep-partitions only applies to partitioned (MBR/GPT) disks"
+                ));
             }
             let s = Volume::change_format(&img.image, &img.opts(true), spec.spec()?)
-                .with_context(|| format!("cannot change the format of {}", img.image.display()))?;
+                .with_context(|| t!("cannot change the format of {}", img.image.display()))?;
             let info = open(&img, false)?.info()?;
             if json {
                 return print_json(&info);
             }
             println!(
-                "rebuilt as {} with {} file(s), {} folder(s); {} bytes free",
-                info.floppy_format
-                    .or(info.media_format)
-                    .unwrap_or(&info.fs_type),
-                s.files,
-                s.dirs,
-                info.free_bytes
+                "{}",
+                t!(
+                    "rebuilt as {} with {} file(s), {} folder(s); {} bytes free",
+                    info.floppy_format
+                        .or(info.media_format)
+                        .unwrap_or(&info.fs_type),
+                    s.files,
+                    s.dirs,
+                    info.free_bytes
+                )
             );
         }
         Cmd::Convert {
@@ -1351,8 +1618,12 @@ fn run(cli: Cli) -> Result<()> {
             container,
             fixed,
             member,
+            encrypt,
             force,
         } => {
+            if let Some(pw) = password_arg(encrypt)? {
+                sectorzero_core::set_password(&dest, Some(&pw));
+            }
             let mut bar = Progress::new(json);
             let r = convert_with_progress(
                 &source,
@@ -1361,21 +1632,24 @@ fn run(cli: Cli) -> Result<()> {
                 container.map(Into::into),
                 !fixed,
                 force,
-                &mut |done, total| bar.show("copying", done, total),
+                &mut |done, total| bar.show(&t!("copying"), done, total),
             )
-            .with_context(|| format!("cannot convert {} to {}", source.display(), dest.display()));
+            .with_context(|| t!("cannot convert {} to {}", source.display(), dest.display()));
             bar.done();
             let r = r?;
             if json {
                 return print_json(&r);
             }
             println!(
-                "wrote {} ({} {}, {} bytes, {} stored)",
-                dest.display(),
-                r.container.kind.name(),
-                r.container.variant,
-                r.bytes,
-                r.stored
+                "{}",
+                t!(
+                    "wrote {} ({} {}, {} bytes, {} stored)",
+                    dest.display(),
+                    tr(r.container.kind.name()),
+                    r.container.variant,
+                    r.bytes,
+                    r.stored
+                )
             );
         }
         Cmd::Iso {
@@ -1401,18 +1675,33 @@ fn run(cli: Cli) -> Result<()> {
                 overwrite: force,
             };
             let r = build_iso(&folder, &output, &opts)
-                .with_context(|| format!("cannot build {}", output.display()))?;
+                .with_context(|| t!("cannot build {}", output.display()))?;
             if json {
                 return print_json(&r);
             }
-            println!(
-                "built {} ({} bytes): {} file(s), {} folder(s){}",
-                output.display(),
-                r.image_size,
-                r.files,
-                r.dirs,
-                if r.bootable { ", bootable" } else { "" }
-            );
+            if r.bootable {
+                println!(
+                    "{}",
+                    t!(
+                        "built {} ({} bytes): {} file(s), {} folder(s), bootable",
+                        output.display(),
+                        r.image_size,
+                        r.files,
+                        r.dirs
+                    )
+                );
+            } else {
+                println!(
+                    "{}",
+                    t!(
+                        "built {} ({} bytes): {} file(s), {} folder(s)",
+                        output.display(),
+                        r.image_size,
+                        r.files,
+                        r.dirs
+                    )
+                );
+            }
         }
         Cmd::Attrib {
             img,
@@ -1437,10 +1726,13 @@ fn run(cli: Cli) -> Result<()> {
                         'H' => &mut edit.hidden,
                         'S' => &mut edit.system,
                         'A' => &mut edit.archive,
-                        other => bail!("unknown attribute {other:?} (use R, H, S or A)"),
+                        other => bail!(t!(
+                            "unknown attribute {} (use R, H, S or A)",
+                            format!("{:?}", other)
+                        )),
                     };
                     if slot.is_some_and(|v| v != on) {
-                        bail!("attribute {c} is both set and cleared");
+                        bail!(t!("attribute {} is both set and cleared", c));
                     }
                     *slot = Some(on);
                 }
@@ -1451,7 +1743,7 @@ fn run(cli: Cli) -> Result<()> {
                 for p in &paths {
                     let e = vol
                         .stat(p)?
-                        .with_context(|| format!("{p}: not found (or the root folder)"))?;
+                        .with_context(|| t!("{}: not found (or the root folder)", p))?;
                     shown.push(e);
                 }
                 if json {
@@ -1459,20 +1751,23 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 for e in shown {
                     println!(
-                        "{}  modified {}  created {}  accessed {}  /{}",
-                        e.attributes.flags(),
-                        e.modified,
-                        if e.created.is_empty() {
-                            "-"
-                        } else {
-                            &e.created
-                        },
-                        if e.accessed.is_empty() {
-                            "-"
-                        } else {
-                            &e.accessed
-                        },
-                        e.path
+                        "{}",
+                        t!(
+                            "{}  modified {}  created {}  accessed {}  /{}",
+                            e.attributes.flags(),
+                            e.modified,
+                            if e.created.is_empty() {
+                                "-"
+                            } else {
+                                &e.created
+                            },
+                            if e.accessed.is_empty() {
+                                "-"
+                            } else {
+                                &e.accessed
+                            },
+                            e.path
+                        )
                     );
                 }
                 return Ok(());
@@ -1482,15 +1777,16 @@ fn run(cli: Cli) -> Result<()> {
             for p in &paths {
                 changed += image
                     .edit_entry(p, &edit, recursive)
-                    .with_context(|| format!("cannot change {p}"))?;
+                    .with_context(|| t!("cannot change {}", p))?;
             }
             if json {
                 return print_json(&serde_json::json!({ "changed": changed }));
             }
-            println!(
-                "changed {changed} entr{}",
-                if changed == 1 { "y" } else { "ies" }
-            );
+            if changed == 1 {
+                println!("{}", t!("changed 1 entry"));
+            } else {
+                println!("{}", t!("changed {} entries", changed));
+            }
         }
         Cmd::Checksum { img, path, file } => {
             let sums = if file {
@@ -1504,9 +1800,9 @@ fn run(cli: Cli) -> Result<()> {
                 return print_json(&sums);
             }
             let what = match (&path, file) {
-                (Some(p), _) => format!("file /{}", p.trim_start_matches(['/', '\\'])),
-                (None, true) => "image file as stored".into(),
-                (None, false) => "virtual disk".into(),
+                (Some(p), _) => t!("file /{}", p.trim_start_matches(['/', '\\'])),
+                (None, true) => t!("image file as stored"),
+                (None, false) => t!("virtual disk"),
             };
             print_checksums(&what, &sums);
         }
@@ -1516,44 +1812,53 @@ fn run(cli: Cli) -> Result<()> {
             force,
         } => {
             let info = create_differencing(&child, &parent, force)
-                .with_context(|| format!("cannot create {}", child.display()))?;
+                .with_context(|| t!("cannot create {}", child.display()))?;
             if json {
                 return print_json(&info);
             }
             println!(
-                "created {} ({} bytes) over {}",
-                child.display(),
-                info.virtual_size,
-                parent.display()
+                "{}",
+                t!(
+                    "created {} ({} bytes) over {}",
+                    child.display(),
+                    info.virtual_size,
+                    parent.display()
+                )
             );
         }
         Cmd::Truncate { image } => {
             let r = truncate_image(&image)
-                .with_context(|| format!("cannot truncate {}", image.display()))?;
+                .with_context(|| t!("cannot truncate {}", image.display()))?;
             if json {
                 return print_json(&r);
             }
             if r.new_size < r.old_size {
                 println!(
-                    "truncated {} from {} to {} bytes",
-                    image.display(),
-                    r.old_size,
-                    r.new_size
+                    "{}",
+                    t!(
+                        "truncated {} from {} to {} bytes",
+                        image.display(),
+                        r.old_size,
+                        r.new_size
+                    )
                 );
             } else {
-                println!("{} has no unused space at the end", image.display());
+                println!(
+                    "{}",
+                    t!("{} has no unused space at the end", image.display())
+                );
             }
         }
         Cmd::IsoReplace { img, path, file } => {
             let data =
-                std::fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
+                std::fs::read(&file).with_context(|| t!("cannot read {}", file.display()))?;
             open_image(&img, true)?
                 .iso_replace_file(&path, &data)
-                .with_context(|| format!("cannot replace {path}"))?;
+                .with_context(|| t!("cannot replace {}", path))?;
             if json {
                 return print_json(&serde_json::json!({ "path": path, "bytes": data.len() }));
             }
-            println!("replaced {path} ({} bytes)", data.len());
+            println!("{}", t!("replaced {} ({} bytes)", path, data.len()));
         }
         Cmd::Sfx {
             image,
@@ -1565,7 +1870,7 @@ fn run(cli: Cli) -> Result<()> {
             if json {
                 return print_json(&serde_json::json!({ "file": out, "bytes": size }));
             }
-            println!("wrote {} ({size} bytes)", out.display());
+            println!("{}", t!("wrote {} ({} bytes)", out.display(), size));
         }
         Cmd::BootImage {
             img,
@@ -1579,9 +1884,13 @@ fn run(cli: Cli) -> Result<()> {
                 return print_json(&serde_json::json!({ "file": out, "bytes": data.len() }));
             }
             println!(
-                "saved boot image {entry} to {} ({} bytes)",
-                out.display(),
-                data.len()
+                "{}",
+                t!(
+                    "saved boot image {} to {} ({} bytes)",
+                    entry,
+                    out.display(),
+                    data.len()
+                )
             );
         }
     }
@@ -1590,32 +1899,37 @@ fn run(cli: Cli) -> Result<()> {
 
 fn print_layout(layout: &Layout) {
     match layout {
-        Layout::BareVolume => println!("layout       bare volume (no partition table)"),
-        Layout::Iso => println!("layout       ISO 9660 CD/DVD image"),
-        Layout::Unknown => println!("layout       unknown"),
+        Layout::BareVolume => row(&t!("layout"), t!("bare volume (no partition table)")),
+        Layout::Iso => row(&t!("layout"), t!("ISO 9660 CD/DVD image")),
+        Layout::Unknown => row(&t!("layout"), t!("unknown")),
         Layout::Mbr(parts) | Layout::Gpt(parts) | Layout::Apm(parts) => {
-            println!(
-                "layout       {}",
+            row(
+                &t!("layout"),
                 match layout {
-                    Layout::Gpt(_) => "GPT",
-                    Layout::Apm(_) => "Apple partition map",
-                    _ => "MBR",
-                }
+                    Layout::Gpt(_) => "GPT".to_string(),
+                    Layout::Apm(_) => t!("Apple partition map"),
+                    _ => "MBR".to_string(),
+                },
             );
             for p in parts {
                 println!(
-                    "  part {:<3}   {:<6} {:<18} start {:>10}  {:>14} bytes  {}{}{}",
+                    "  {:<4}  {:<6} {:<18} {} {:>10}  {:>14}  {}{}{}",
                     p.index,
                     if p.scheme == "mbr" {
                         p.type_id.as_str()
                     } else {
                         ""
                     },
-                    p.type_name,
+                    tr(&p.type_name),
+                    t!("start"),
                     p.start_lba,
-                    p.size_bytes(),
+                    t!("{} bytes", p.size_bytes()),
                     p.fs.unwrap_or("-"),
-                    if p.bootable { "  boot" } else { "" },
+                    if p.bootable {
+                        t!("  boot")
+                    } else {
+                        String::new()
+                    },
                     if p.name.is_empty() {
                         String::new()
                     } else {
@@ -1629,73 +1943,146 @@ fn print_layout(layout: &Layout) {
 
 fn print_volume(i: &VolumeInfo) {
     if let Some(p) = &i.partition {
-        println!("opened       partition {}", p.index);
+        row(&t!("opened"), t!("partition {}", p.index));
     }
-    println!(
-        "file system  {}{}",
-        i.fs_type,
-        if i.fs_writable { "" } else { " (read-only)" }
+    row(
+        &t!("file system"),
+        if i.fs_writable {
+            i.fs_type.clone()
+        } else {
+            t!("{} (read-only)", i.fs_type)
+        },
     );
     if let Some(why) = &i.read_only_reason {
-        println!("read-only    {why}");
+        row(&t!("read-only"), tr(why));
     }
     if let Some(f) = i.floppy_format.or(i.media_format) {
-        println!("format       {f}");
+        row(&t!("format"), tr(f));
     }
-    println!(
-        "label        {}",
+    row(
+        &t!("label"),
         if i.label.is_empty() {
-            "(none)"
+            t!("(none)")
         } else {
-            &i.label
-        }
+            i.label.clone()
+        },
     );
     if !i.volume_id.is_empty() {
         let what = if i.fs_type.starts_with("ext") {
-            "uuid"
+            t!("uuid")
         } else {
-            "serial"
+            t!("serial")
         };
-        println!("{what:<12} {}", i.volume_id);
+        row(&what, &i.volume_id);
     }
     if !i.oem_name.is_empty() {
-        println!(
-            "{:<12} {}",
-            if i.iso.is_some() { "system" } else { "oem" },
-            i.oem_name
-        );
+        let what = if i.iso.is_some() {
+            t!("system")
+        } else {
+            t!("oem")
+        };
+        row(&what, &i.oem_name);
     }
-    println!("sector size  {}", i.bytes_per_sector);
-    println!("cluster size {}", i.cluster_size);
-    println!(
-        "capacity     {} bytes ({} clusters)",
-        i.total_bytes, i.total_clusters
+    row(&t!("sector size"), i.bytes_per_sector);
+    row(&t!("cluster size"), i.cluster_size);
+    row(
+        &t!("capacity"),
+        t!("{} bytes ({} clusters)", i.total_bytes, i.total_clusters),
     );
     if i.iso.is_none() {
-        println!(
-            "free         {} bytes ({} clusters)",
-            i.free_bytes, i.free_clusters
+        row(
+            &t!("free"),
+            t!("{} bytes ({} clusters)", i.free_bytes, i.free_clusters),
         );
     }
     if let Some(iso) = &i.iso {
         if !iso.application.is_empty() {
-            println!("application  {}", iso.application);
+            row(&t!("application"), &iso.application);
         }
         if !iso.created.is_empty() {
-            println!("created      {}", iso.created);
+            row(&t!("created"), &iso.created);
         }
         for b in &iso.boot_entries {
-            println!(
-                "boot {}       {} {}{}, {} bytes at block {}",
-                b.index,
-                b.platform,
-                b.media,
-                if b.bootable { "" } else { " (not bootable)" },
+            let what = t!(
+                "{} {}, {} bytes at block {}",
+                tr(&b.platform),
+                tr(&b.media),
                 b.image_size,
                 b.lba
             );
+            row(
+                &t!("boot {}", b.index),
+                if b.bootable {
+                    what
+                } else {
+                    t!("{} (not bootable)", what)
+                },
+            );
         }
     }
+}
+
+/// One `label  value` line of `s0 info`, the values lined up in a column.
+fn row(label: &str, value: impl std::fmt::Display) {
+    println!("{}{value}", pad(label, label_width()));
+}
+
+/// The label column of `info`: wide enough for the longest label in the current language.
+fn label_width() -> usize {
+    static WIDTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *WIDTH.get_or_init(|| {
+        let labels = [
+            t!("image"),
+            t!("container"),
+            t!("member"),
+            t!("comment"),
+            t!("encryption"),
+            t!("volume"),
+            t!("layout"),
+            t!("opened"),
+            t!("file system"),
+            t!("read-only"),
+            t!("format"),
+            t!("label"),
+            t!("uuid"),
+            t!("serial"),
+            t!("system"),
+            t!("oem"),
+            t!("sector size"),
+            t!("cluster size"),
+            t!("capacity"),
+            t!("free"),
+            t!("application"),
+            t!("created"),
+        ];
+        let longest = labels.iter().map(|l| columns(l)).max().unwrap_or(0);
+        (longest + 1).clamp(13, 24)
+    })
+}
+
+/// Terminal columns `s` takes (East Asian wide characters count twice).
+fn columns(s: &str) -> usize {
+    let wide = |c: char| {
+        matches!(c as u32, 0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6)
+    };
+    s.chars().map(|c| if wide(c) { 2 } else { 1 }).sum()
+}
+
+/// `label` and spaces up to `width` columns (at least one space).
+fn pad(label: &str, width: usize) -> String {
+    format!(
+        "{label}{}",
+        " ".repeat(width.saturating_sub(columns(label)).max(1))
+    )
+}
+
+/// An error and its causes, each translated, as `outer: inner: …`.
+fn error_text(e: &anyhow::Error) -> String {
+    e.chain()
+        .map(|c| tr(&c.to_string()))
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 fn print_listing(entries: &[Entry], recursive: bool) {
@@ -1731,11 +2118,14 @@ fn print_listing(entries: &[Entry], recursive: bool) {
             bytes += e.size;
         }
     }
-    println!("{files} file(s), {bytes} bytes; {dirs} folder(s)");
+    println!(
+        "{}",
+        t!("{} file(s), {} bytes; {} folder(s)", files, bytes, dirs)
+    );
 }
 
 fn print_checksums(what: &str, c: &Checksums) {
-    println!("{what}, {} bytes", c.bytes);
+    println!("{}", t!("{}, {} bytes", what, c.bytes));
     println!("  CRC32    {}", c.crc32);
     println!("  Adler-32 {}", c.adler32);
     println!("  MD5      {}", c.md5);
@@ -1749,17 +2139,44 @@ fn add(total: &mut Stats, s: Stats) {
     total.bytes += s.bytes;
 }
 
-fn report(json: bool, verb: &str, s: &Stats, dest: Option<&Path>) -> Result<()> {
+enum Verb {
+    Extracted,
+    Injected,
+    Removed,
+}
+
+fn report(json: bool, verb: Verb, s: &Stats, dest: Option<&Path>) -> Result<()> {
     if json {
         return print_json(s);
     }
-    let to = dest
-        .map(|d| format!(" to {}", d.display()))
-        .unwrap_or_default();
-    println!(
-        "{verb} {} file(s), {} folder(s), {} bytes{to}",
-        s.files, s.dirs, s.bytes
-    );
+    let line = match (verb, dest) {
+        (Verb::Extracted, Some(d)) => t!(
+            "extracted {} file(s), {} folder(s), {} bytes to {}",
+            s.files,
+            s.dirs,
+            s.bytes,
+            d.display()
+        ),
+        (Verb::Extracted, None) => t!(
+            "extracted {} file(s), {} folder(s), {} bytes",
+            s.files,
+            s.dirs,
+            s.bytes
+        ),
+        (Verb::Injected, _) => t!(
+            "injected {} file(s), {} folder(s), {} bytes",
+            s.files,
+            s.dirs,
+            s.bytes
+        ),
+        (Verb::Removed, _) => t!(
+            "removed {} file(s), {} folder(s), {} bytes",
+            s.files,
+            s.dirs,
+            s.bytes
+        ),
+    };
+    println!("{line}");
     Ok(())
 }
 
@@ -1773,7 +2190,7 @@ fn parse_byte(s: &str) -> std::result::Result<u8, String> {
         Some(h) => u8::from_str_radix(h, 16),
         None => s.parse(),
     };
-    r.map_err(|_| format!("{s:?} is not a byte value like 0x80"))
+    r.map_err(|_| t!("{} is not a byte value like 0x80", format!("{:?}", s)))
 }
 
 /// `512M`, `2G`, `1440K`, or plain bytes.
@@ -1790,9 +2207,73 @@ fn parse_size(s: &str) -> Result<u64> {
     let n: f64 = num
         .trim()
         .parse()
-        .with_context(|| format!("bad size {s:?}"))?;
+        .with_context(|| t!("bad size {}", format!("{:?}", s)))?;
     if n <= 0.0 {
-        bail!("size must be positive");
+        bail!(t!("size must be positive"));
     }
     Ok((n * mult as f64) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every key: engine messages and command line text from the sources, then the help.
+    fn all_keys() -> Vec<(String, String)> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut keys = sectorzero_i18n::extract::workspace_keys(&root);
+        for h in help_keys() {
+            let key = h.replace('{', "{{").replace('}', "}}");
+            if !keys.iter().any(|(k, _)| *k == key) {
+                keys.push((key, "s0 --help".into()));
+            }
+        }
+        keys
+    }
+
+    /// Every catalog translates every key with the same placeholders and has no keys that
+    /// are no longer used. The keys a catalog lacks are written to
+    /// `target/i18n/missing-<lang>.json` for translators (all keys: `target/i18n/keys.json`).
+    #[test]
+    fn catalogs_are_complete() {
+        let keys = all_keys();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/i18n");
+        std::fs::create_dir_all(&dir).unwrap();
+        let as_json = |list: &[&(String, String)]| {
+            let map: serde_json::Map<String, serde_json::Value> = list
+                .iter()
+                .map(|(k, at)| (k.clone(), at.clone().into()))
+                .collect();
+            serde_json::to_string_pretty(&map).unwrap()
+        };
+        std::fs::write(
+            dir.join("keys.json"),
+            as_json(&keys.iter().collect::<Vec<_>>()),
+        )
+        .unwrap();
+        let mut problems = Vec::new();
+        for (lang, _) in &sectorzero_i18n::LANGUAGES[1..] {
+            let have = sectorzero_i18n::catalog_keys(lang);
+            let missing: Vec<_> = keys.iter().filter(|(k, _)| !have.contains(k)).collect();
+            let file = dir.join(format!("missing-{lang}.json"));
+            if missing.is_empty() {
+                let _ = std::fs::remove_file(&file);
+            } else {
+                std::fs::write(&file, as_json(&missing)).unwrap();
+                problems.push(format!("{lang}: {} keys missing", missing.len()));
+            }
+            for k in &have {
+                if !keys.iter().any(|(key, _)| key == k) {
+                    problems.push(format!("{lang}: unused key {k:?}"));
+                }
+            }
+            for k in &have {
+                let translation = sectorzero_i18n::translation(lang, k).unwrap_or_default();
+                if let Some(e) = sectorzero_i18n::check_translation(k, &translation) {
+                    problems.push(format!("{lang}: {k:?}: {e}"));
+                }
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
 }

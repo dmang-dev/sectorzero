@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 sectorzero-core.workspace = true
+sectorzero-i18n.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

@@ -370,5 +370,22 @@ window.SZ_LOCALES['cs'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Mapa oddílů Apple",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standard: diskety, Zip a další kazety)",
-  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)"
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)",
+  "Encrypt this IMZ image with a password, change its password or remove it": "Zašifrovat tento obraz IMZ heslem, změnit jeho heslo nebo jej odebrat",
+  "Password…": "Heslo…",
+  "Password (optional)": "Heslo (volitelné)",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "Zašifruje obraz stejně jako WinImage (AES). Ponechte prázdné, pokud heslo nechcete.",
+  "Password": "Heslo",
+  "{name} is encrypted. Enter its password:": "{name} je šifrováno. Zadejte heslo:",
+  "Wrong password. Try again.": "Nesprávné heslo. Zkuste to znovu.",
+  "New password for {name}:": "Nové heslo pro {name}:",
+  "Password to encrypt {name} with:": "Heslo pro zašifrování {name}:",
+  "Leave empty to store the image unencrypted.": "Ponecháním prázdného pole se obraz uloží nešifrovaný.",
+  "Encrypts the image the way WinImage does (AES).": "Zašifruje obraz stejně jako WinImage (AES).",
+  "Type the password again:": "Zadejte heslo znovu:",
+  "The passwords do not match.": "Hesla se neshodují.",
+  "{name} is now encrypted": "{name} je nyní šifrováno",
+  "{name} is no longer encrypted": "{name} již není šifrováno",
+  "Encryption": "Šifrování",
+  "Password (AES)": "Heslo (AES)"
 };

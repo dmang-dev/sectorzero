@@ -43,6 +43,7 @@
       <button id="mnuListing" role="menuitem">Export file list…</button>
       <button id="mnuTruncate" role="menuitem" title="Cut the free space off the end of a raw image file">Truncate unused space…</button>
       <button id="mnuDiff" role="menuitem" title="Make a new VHD that records changes on top of this one, leaving this file untouched">Create differencing disk…</button>
+      <button id="mnuPassword" role="menuitem" title="Encrypt this IMZ image with a password, change its password or remove it">Password…</button>
       <button id="mnuIsoReplace" role="menuitem" title="Overwrite the selected file on this CD image with another file of the same or smaller size">Replace file in ISO…</button>
     </div>
     <label class="part" id="forksWrap" hidden title="How Macintosh resource forks and Finder information are copied in and out">Mac forks
@@ -136,6 +137,10 @@
         </select>
       </label>
       <label class="check"><input type="checkbox" id="newDynamic" checked> Dynamic (grows as data is written; VHD, VHDX, VMDK, VDI)</label>
+      <label id="newPasswordWrap" hidden>Password (optional)
+        <input id="newPassword" type="password" autocomplete="new-password" spellcheck="false">
+      </label>
+      <p class="hint" id="newPasswordHint" hidden>Encrypts the image the way WinImage does (AES). Leave empty for none.</p>
       <label><span id="newLabelText">Volume label (optional, up to 11 characters)</span>
         <input id="newLabel" maxlength="11" autocomplete="off" spellcheck="false">
       </label>
@@ -151,6 +156,19 @@
       <h2 id="textTitle"></h2>
       <input id="textInput" autocomplete="off" spellcheck="false">
       <p class="hint" id="textHint"></p>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">OK</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="pwDlg">
+    <form method="dialog">
+      <h2>Password</h2>
+      <p id="pwText"></p>
+      <input id="pwInput" type="password" autocomplete="off" spellcheck="false">
+      <p class="hint" id="pwHint"></p>
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button value="ok" class="primary">OK</button>
@@ -251,6 +269,10 @@
         </select>
       </label>
       <label class="check"><input type="checkbox" id="saveDynamic" checked> Dynamic (VHD, VHDX, VMDK, VDI)</label>
+      <label id="savePasswordWrap" hidden>Password (optional)
+        <input id="savePassword" type="password" autocomplete="new-password" spellcheck="false">
+      </label>
+      <p class="hint" id="savePasswordHint" hidden>Encrypts the image the way WinImage does (AES). Leave empty for none.</p>
       <menu>
         <button value="cancel" formnovalidate>Cancel</button>
         <button value="ok" class="primary">Choose location…</button>
