@@ -238,7 +238,22 @@ Alpine guest under QEMU (e2fsprogs from the ISO): `e2fsck -fn` passes on SectorZ
 ext2/ext3/ext4 images and on mke2fs ext2/ext3/ext4 images after SectorZero writes to them, and
 the kernel sees SectorZero's file contents, renames, deletions and attribute/time changes.
 
-Still to do, roughly in order: physical drives on Windows (read an image from a USB stick or card,
-write one back, with verification), physical floppy drives on Windows, batch mode, NTFS
+Physical drives (2026-11-23, `device.rs`): `s0 drives` and the app's Drives dialog list
+`\\.\PhysicalDriveN` disks (size, bus, model, removable, mounted volumes) and floppy drive
+letters on Windows, `/sys/block` on Linux; listing only queries the devices, so it works
+without administrator rights. A drive path opens anywhere an image does. Windows only accepts
+whole, aligned sectors on raw disks, so every transfer goes through a sector-aligned buffer
+that is 4 KiB-aligned in memory, and partial sectors are read, patched and written back.
+Writing an image (`write_image_to_drive`, verified by reading everything back) first locks and
+dismounts every volume on the disk (FSCTL_LOCK_VOLUME, FSCTL_DISMOUNT_VOLUME), and afterwards
+asks Windows to re-read the partition table (IOCTL_DISK_UPDATE_PROPERTIES). The disk holding
+the Windows folder (or `/` on Linux) is always refused, fixed disks need an explicit
+"allow fixed" flag, and Linux refuses drives with mounted partitions. Opening a drive needs
+administrator rights (root on Linux). Checked on real block devices in the Alpine guest
+(floppy drive, USB stick, virtio disk); on Windows, only listing and the refusals have been
+tried so far, since this machine's only disk is the system disk.
+
+Still to do, roughly in order: low-level formatting of physical floppies and drive wiping and
+duplication, batch mode, NTFS
 writing, exFAT, resizing partitioned disks, converting a boot floppy into a
 bootable hard disk image, encrypted IMZ (proprietary), and the macOS and Android builds.

@@ -518,6 +518,7 @@ async function actionFormat() {
 }
 
 async function actionSaveAs() {
+  $('saveAsTitle').textContent = 'Save a copy as';
   const sync = () => { $('saveDynamic').disabled = !DYNAMIC.includes($('saveContainer').value); };
   $('saveContainer').onchange = sync;
   sync();
@@ -825,6 +826,104 @@ function enter(dir) {
   return refresh();
 }
 
+// ---------- drives ----------
+
+// Progress events from long drive operations show in the status bar.
+window.__TAURI__.event.listen('progress', ({ payload: p }) => {
+  const verb = { reading: 'Reading', writing: 'Writing', verifying: 'Verifying' }[p.phase] || p.phase;
+  const pct = p.total ? Math.floor((p.done * 100) / p.total) : 0;
+  setStatus(`${verb} ${pct}% (${human(p.done)} of ${human(p.total)})`);
+});
+
+function driveLine(d) {
+  const bits = [d.bus, d.media ? human(d.size) : 'no medium'];
+  if (d.volumes.length) bits.push(d.volumes.join(' '));
+  if (d.system) bits.push('system disk, never written');
+  else if (!d.removable) bits.push('fixed disk');
+  return bits.join(' · ');
+}
+
+async function fillDrives() {
+  const list = $('driveList');
+  list.replaceChildren();
+  const drives = await invoke('drives');
+  for (const d of drives) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'drive';
+    input.value = d.path;
+    input.disabled = !d.media;
+    input.onchange = syncDriveButtons;
+    input._drive = d;
+    const title = document.createElement('span');
+    title.textContent = `${d.name}${d.model ? ` — ${d.model}` : ''}`;
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = `${driveLine(d)} · ${d.path}`;
+    label.append(input, title, sub);
+    list.append(label);
+  }
+  // Preselect the first removable drive with a medium.
+  const first = [...list.querySelectorAll('input')].find((i) => !i.disabled && i._drive.removable && !i._drive.system);
+  if (first) first.checked = true;
+  syncDriveButtons();
+}
+
+function selectedDrive() {
+  return document.querySelector('#driveList input:checked')?._drive ?? null;
+}
+
+function syncDriveButtons() {
+  const d = selectedDrive();
+  const fixed = !!d && !d.removable && !d.system;
+  $('driveFixedWrap').hidden = !fixed;
+  if (!fixed) $('driveFixed').checked = false;
+  $('driveOpen').disabled = !d;
+  $('driveRead').disabled = !d;
+  $('driveWrite').disabled = !d || d.system || (fixed && !$('driveFixed').checked);
+}
+
+async function actionDrives() {
+  $('driveFixed').onchange = syncDriveButtons;
+  $('driveRefresh').onclick = () => fillDrives().catch(showError);
+  await fillDrives();
+  const what = await showDialog($('drivesDlg'));
+  const d = selectedDrive();
+  if (!d || !['open', 'read', 'write'].includes(what)) return;
+  if (what === 'open') {
+    await openImage(d.path);
+    return;
+  }
+  if (what === 'read') {
+    $('saveAsTitle').textContent = `Read ${d.name} to an image`;
+    const sync = () => { $('saveDynamic').disabled = !DYNAMIC.includes($('saveContainer').value); };
+    $('saveContainer').onchange = sync;
+    sync();
+    if (await showDialog($('saveAsDlg')) !== 'ok') return;
+    const container = $('saveContainer').value;
+    const name = d.name.replace(/[^A-Za-z0-9 _-]+/g, '').trim() || 'drive';
+    const dest = await dialog.save({ title: `Read ${d.name} to`, defaultPath: `${name}.${CONTAINER_EXT[container]}`, filters: filterFor(container) });
+    if (!dest) return;
+    setStatus(`Reading ${d.name}…`);
+    const r = await invoke('read_drive', { drive: d.path, dest, container, dynamic: !$('saveDynamic').disabled && $('saveDynamic').checked });
+    setStatus(`Read ${d.name} into ${baseName(dest)} (${human(r.bytes)}, ${human(r.stored)} of data)`);
+    if (await dialog.ask(`Read ${d.name} into ${baseName(dest)}. Open the image now?`, { title: 'Read drive', kind: 'info' })) await openImage(dest);
+    return;
+  }
+  const image = await dialog.open({ title: `Image to write to ${d.name}`, multiple: false, directory: false, filters: IMAGE_FILTERS, defaultPath: state.image?.path });
+  if (!image) return;
+  const sure = await dialog.ask(
+    `Everything on ${d.name}${d.model ? ` (${d.model})` : ''}, ${driveLine(d)}, will be replaced with ${baseName(image)}.\n\nThis cannot be undone.`,
+    { title: 'Write image to drive', kind: 'warning', okLabel: 'Write', cancelLabel: 'Cancel' },
+  );
+  if (!sure) return;
+  setStatus(`Writing ${baseName(image)} to ${d.name}…`);
+  const r = await invoke('write_drive', { image, drive: d.path, verify: $('driveVerify').checked, allowFixed: $('driveFixed').checked });
+  if (state.image && state.image.path.toLowerCase() === d.path.toLowerCase()) await openImage(d.path);
+  setStatus(`Wrote ${human(r.bytes)} to ${d.name}${r.verified ? ', verified' : ''}`);
+}
+
 // ---------- rendering ----------
 
 function updateButtons() {
@@ -833,7 +932,7 @@ function updateButtons() {
   document.querySelectorAll('[data-needs-writable]').forEach((b) => { b.disabled = !writable() || state.busy; });
   document.querySelectorAll('[data-needs-selection]').forEach((b) => { b.disabled ||= state.selected.size === 0; });
   $('btnRename').disabled ||= state.selected.size !== 1;
-  for (const id of ['btnNew', 'btnOpen', 'btnIso']) $(id).disabled = state.busy;
+  for (const id of ['btnNew', 'btnOpen', 'btnDrives', 'btnIso']) $(id).disabled = state.busy;
   const iso = has && state.image.info.iso;
   $('btnBootImage').hidden = !iso;
   for (const id of ['btnLabel', 'btnBoot', 'btnDefrag', 'btnFormat']) $(id).hidden = !!iso;
@@ -967,6 +1066,7 @@ function select(idx, ev) {
 
 $('btnNew').onclick = () => run(actionNew);
 $('btnOpen').onclick = () => run(actionOpen);
+$('btnDrives').onclick = () => run(actionDrives);
 $('btnClose').onclick = () => run(closeImage);
 $('btnInject').onclick = () => run(actionInject);
 $('btnInjectDir').onclick = () => run(actionInjectDir);

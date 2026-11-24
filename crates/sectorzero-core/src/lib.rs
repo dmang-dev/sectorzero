@@ -1,7 +1,8 @@
 //! sectorzero-core: the disk image engine behind the `s0` CLI and the desktop app.
 //!
 //! Layers, bottom up:
-//! - `container`: the file format holding the virtual disk (raw, IMZ/WLZ, VHD, VHDX, VMDK);
+//! - `container`: the file format holding the virtual disk (raw, IMZ/WLZ, VHD, VHDX, VMDK),
+//!   or a physical drive (`device`);
 //! - `partition`: the layout of the disk (bare volume, ISO 9660, MBR, GPT);
 //! - `window`: one volume's byte range as a stream;
 //! - file systems: FAT12/16/32 (read/write, via fatfs, plus `fatraw` for label, boot
@@ -9,6 +10,7 @@
 
 mod checksum;
 mod container;
+mod device;
 mod error;
 mod ext;
 mod fatraw;
@@ -25,10 +27,17 @@ mod window;
 
 pub use checksum::{Checksums, checksum_file};
 pub use container::{ContainerInfo, ContainerKind, create_differencing};
+pub use device::{
+    DriveInfo, DriveWriteOptions, DriveWriteReport, drive_info, is_device_path, list_drives,
+    write_image_to_drive,
+};
 pub use error::{Error, Result};
 pub use fatraw::{BootSectorEdit, BootSectorInfo, DefragReport, EntryEdit};
 pub use format::{FLOPPY_FORMATS, FloppyFormat, Geometry, NewImage};
-pub use image::{ConvertReport, Image, OpenOptions, TruncateReport, convert, truncate_image};
+pub use image::{
+    ConvertReport, Image, OpenOptions, TruncateReport, convert, convert_with_progress,
+    truncate_image,
+};
 pub use iso::{BootEntry, IsoInfo};
 pub use iso_build::{BootPlatform, IsoBuildOptions, IsoBuildReport, build_iso};
 pub use listing::{ListingFormat, render_listing};

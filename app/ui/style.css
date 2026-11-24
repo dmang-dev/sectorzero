@@ -244,3 +244,24 @@ dialog .geo p.row { margin: 0 0 8px; }
 dialog fieldset.choice { flex-wrap: wrap; }
 #sumList dd { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
 #rows tr.dragging { opacity: 0.6; }
+
+/* Drives dialog */
+#drivesDlg { width: min(560px, 92vw); }
+.drives { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow: auto; margin-bottom: 12px; }
+.drives:empty::before { content: "No drives found."; color: var(--muted); }
+.drives label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 8px;
+  align-items: start;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+}
+.drives label:has(input:checked) { border-color: var(--accent); background: var(--panel); }
+.drives label:has(input:disabled) { color: var(--muted); }
+.drives input { margin-top: 3px !important; }
+.drives .sub { grid-column: 2; color: var(--muted); font-size: 12px; }
+dialog button.danger:not(:disabled) { color: var(--danger); }
