@@ -179,8 +179,32 @@ function fillFormatSelect(sel, { withDisk = false, selected = '1440' } = {}) {
 
 // ---------- image lifecycle ----------
 
+// Ask for the password of an encrypted image; null when cancelled.
+async function askPassword(text, hint = '') {
+  $('pwText').textContent = text;
+  $('pwHint').textContent = hint;
+  $('pwInput').value = '';
+  const p = showDialog($('pwDlg'));
+  $('pwInput').focus();
+  return (await p) === 'ok' ? $('pwInput').value : null;
+}
+
+// Open an image; encrypted IMZ/WLZ images ask for their password until it is right.
 async function openImage(path, partition = null) {
-  state.image = await invoke('open_image', { path, partition, member: null });
+  let password = null;
+  for (;;) {
+    try {
+      state.image = await invoke('open_image', { path, partition, member: null, password });
+      break;
+    } catch (e) {
+      if (!e || (e.kind !== 'password_needed' && e.kind !== 'wrong_password')) throw e;
+      password = await askPassword(
+        t('{name} is encrypted. Enter its password:', { name: baseName(path) }),
+        e.kind === 'wrong_password' ? t('Wrong password. Try again.') : '',
+      );
+      if (password === null) return;
+    }
+  }
   state.partition = partition;
   state.dir = '';
   await refresh();
@@ -304,6 +328,8 @@ function syncNewDialog() {
   if (!hfs && $('newScheme').value === 'apm') $('newScheme').value = 'mbr';
   const c = $('newContainer').value;
   $('newDynamic').disabled = !DYNAMIC.includes(c);
+  $('newPasswordWrap').hidden = c !== 'imz';
+  $('newPasswordHint').hidden = c !== 'imz';
   // Media with 2048-byte sectors (magneto-optical) take FAT only.
   const m = kind === 'media' && state.media?.find((x) => x.id === $('newMedia').value);
   const fatOnly = !!m && m.sector_size !== 512;
@@ -324,6 +350,7 @@ async function actionNew() {
     }));
   }
   geoInit($('newGeo'));
+  $('newPassword').value = '';
   syncNewDialog();
   if (await showDialog($('newDlg')) !== 'ok') return;
   const kind = document.querySelector('input[name="newKind"]:checked').value;
@@ -342,7 +369,9 @@ async function actionNew() {
     container,
     dynamic: !$('newDynamic').disabled && $('newDynamic').checked,
     geometry,
+    password: container === 'imz' && $('newPassword').value ? $('newPassword').value : null,
   };
+  $('newPassword').value = '';
   state.image = await invoke('new_image', { spec });
   state.partition = null;
   state.dir = '';
@@ -565,16 +594,45 @@ async function actionFormat() {
   setStatus(t('Changed format to {format}', { format: state.image.info.floppy_format || human(state.image.info.volume_size) }));
 }
 
+// Encrypt the open IMZ image, change its password, or store it unencrypted again.
+async function actionPassword() {
+  const name = state.image.name;
+  const encrypted = state.image.info.container.encrypted;
+  const pw = await askPassword(
+    encrypted ? t('New password for {name}:', { name }) : t('Password to encrypt {name} with:', { name }),
+    encrypted ? t('Leave empty to store the image unencrypted.') : t('Encrypts the image the way WinImage does (AES).'),
+  );
+  if (pw === null || (!pw && !encrypted)) return;
+  if (pw) {
+    const again = await askPassword(t('Type the password again:'));
+    if (again === null) return;
+    if (again !== pw) throw new Error(t('The passwords do not match.'));
+  }
+  const keep = state.image.path;
+  state.image = await invoke('set_image_password', { password: pw || null });
+  state.image.path = keep;
+  await refresh(true);
+  setStatus(pw ? t('{name} is now encrypted', { name }) : t('{name} is no longer encrypted', { name }));
+}
+
 async function actionSaveAs() {
   $('saveAsTitle').textContent = t('Save a copy as');
-  const sync = () => { $('saveDynamic').disabled = !DYNAMIC.includes($('saveContainer').value); };
+  const sync = () => {
+    const c = $('saveContainer').value;
+    $('saveDynamic').disabled = !DYNAMIC.includes(c);
+    $('savePasswordWrap').hidden = c !== 'imz';
+    $('savePasswordHint').hidden = c !== 'imz';
+  };
+  $('savePassword').value = '';
   $('saveContainer').onchange = sync;
   sync();
   if (await showDialog($('saveAsDlg')) !== 'ok') return;
   const container = $('saveContainer').value;
   const dest = await dialog.save({ title: t('Save a copy as'), defaultPath: `${stem(state.image.name)}.${CONTAINER_EXT[container]}`, filters: filterFor(container) });
   if (!dest) return;
-  const r = await invoke('save_as', { dest, container, dynamic: !$('saveDynamic').disabled && $('saveDynamic').checked });
+  const password = container === 'imz' && $('savePassword').value ? $('savePassword').value : null;
+  $('savePassword').value = '';
+  const r = await invoke('save_as', { dest, container, dynamic: !$('saveDynamic').disabled && $('saveDynamic').checked, password });
   setStatus(t('Saved {name} ({size}, {stored} of data)', { name: baseName(dest), size: human(r.bytes), stored: human(r.stored) }));
   const open = await dialog.ask(t('Saved {name}. Open it now?', { name: baseName(dest) }), { title: t('Save as'), kind: 'info' });
   if (open) await openImage(dest);
@@ -649,6 +707,7 @@ async function actionInfo() {
   ];
   if (i.read_only_reason) rows.push([t('Read-only because'), i.read_only_reason]);
   if (c.comment) rows.push([t('Comment'), c.comment]);
+  if (c.encrypted) rows.push([t('Encryption'), t('Password (AES)')]);
   if (c.parent) rows.push([t('Parent'), c.parent]);
   if (i.iso) {
     rows.push([t('Volume ID'), i.label || none]);
@@ -1029,6 +1088,8 @@ async function actionDrives() {
   if (what === 'read') {
     $('saveAsTitle').textContent = t('Read {drive} to an image', { drive: d.name });
     const sync = () => { $('saveDynamic').disabled = !DYNAMIC.includes($('saveContainer').value); };
+    $('savePasswordWrap').hidden = true;
+    $('savePasswordHint').hidden = true;
     $('saveContainer').onchange = sync;
     sync();
     if (await showDialog($('saveAsDlg')) !== 'ok') return;
@@ -1076,6 +1137,7 @@ function updateButtons() {
   $('mnuIsoReplace').disabled = !(sel.length === 1 && !sel[0].is_dir);
   $('mnuTruncate').hidden = !!iso;
   $('mnuDiff').disabled = !(has && state.image.info.container.kind === 'vhd');
+  $('mnuPassword').disabled = !(writable() && ['imz', 'wlz'].includes(state.image.info.container.kind));
   $('mnuTruncate').disabled = !(writable() && state.image.info.container.kind === 'raw'
     && state.image.info.layout.kind === 'BareVolume');
   $('partSel').disabled = state.busy;
@@ -1234,6 +1296,7 @@ menuItem('mnuListing', actionListing);
 menuItem('mnuTruncate', actionTruncate);
 menuItem('mnuIsoReplace', actionIsoReplace);
 menuItem('mnuDiff', actionDiff);
+menuItem('mnuPassword', actionPassword);
 
 // A press on a row that moves a few pixels starts dragging the selection out of the window.
 document.addEventListener('mousemove', (ev) => {
@@ -1308,6 +1371,8 @@ getCurrentWebview().onDragDropEvent((event) => {
 
 async function setLanguage(lang) {
   await I18N.load(lang);
+  // Engine messages (errors from the backend) follow the UI's language.
+  await invoke('set_language', { lang: I18N.lang }).catch(() => {});
   translatePage();
   $('statusLeft').dataset.working = t('working…');
   // The geometry fields are copied from their template when first shown; start them again.

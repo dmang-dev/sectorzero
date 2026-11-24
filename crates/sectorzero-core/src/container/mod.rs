@@ -13,6 +13,7 @@ mod vdi;
 mod vhd;
 mod vhdx;
 mod vmdk;
+mod wicrypt;
 mod zip;
 
 use std::fs::File;
@@ -38,6 +39,14 @@ pub(crate) trait Disk: Send {
     /// Persist container metadata (allocation tables, footers, ZIP re-pack).
     fn sync(&mut self) -> io::Result<()>;
     fn info(&self) -> ContainerInfo;
+    /// Encrypt the stored image with this password from the next sync on, or store it
+    /// unencrypted (`None`). Only IMZ/WLZ archives can do this.
+    fn set_password(&mut self, _password: Option<&str>) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "passwords on {} images (only IMZ and WLZ archives can be encrypted)",
+            self.info().kind.name()
+        )))
+    }
     /// `false` when the range is known to read as zeros without storing anything
     /// (an unallocated block in a sparse format). Used to keep conversions sparse.
     fn is_allocated(&mut self, _offset: u64, _len: u64) -> io::Result<bool> {
@@ -46,6 +55,63 @@ pub(crate) trait Disk: Send {
 }
 
 pub(crate) type SharedDisk = Arc<Mutex<Box<dyn Disk>>>;
+
+static PASSWORDS: Mutex<Vec<(std::path::PathBuf, String)>> = Mutex::new(Vec::new());
+
+fn password_key(path: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        // Not created yet: canonicalize the folder and keep the name.
+        match (path.parent(), path.file_name()) {
+            (Some(dir), Some(name)) => std::fs::canonicalize(if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            })
+            .map(|d| d.join(name))
+            .unwrap_or_else(|_| path.to_path_buf()),
+            _ => path.to_path_buf(),
+        }
+    })
+}
+
+/// Remember the password of an encrypted IMZ/WLZ archive at `path` (or forget it with
+/// `None`). Every later open of that file uses it, and an IMZ created at `path` (by
+/// [`crate::Volume::create`], [`crate::convert`] or a rebuild) is saved encrypted with it.
+pub fn set_password(path: &Path, password: Option<&str>) {
+    let key = password_key(path);
+    let mut list = PASSWORDS.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|(p, _)| *p != key);
+    if let Some(pw) = password {
+        list.push((key, pw.to_string()));
+    }
+}
+
+pub(crate) fn password_for(path: &Path) -> Option<String> {
+    let key = password_key(path);
+    let list = PASSWORDS.lock().unwrap_or_else(|e| e.into_inner());
+    list.iter()
+        .find(|(p, _)| *p == key)
+        .map(|(_, pw)| pw.clone())
+}
+
+static FALLBACK_PASSWORD: Mutex<Option<String>> = Mutex::new(None);
+
+/// A password to try on any encrypted archive that has none registered with
+/// [`set_password`] (for command-line tools that take one password for every image).
+/// It is never used to encrypt a new file.
+pub fn set_fallback_password(password: Option<&str>) {
+    *FALLBACK_PASSWORD.lock().unwrap_or_else(|e| e.into_inner()) = password.map(str::to_string);
+}
+
+/// The password to open `path` with: its own, or the fallback.
+pub(crate) fn open_password_for(path: &Path) -> Option<String> {
+    password_for(path).or_else(|| {
+        FALLBACK_PASSWORD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    })
+}
 
 pub(crate) fn share(d: Box<dyn Disk>) -> SharedDisk {
     Arc::new(Mutex::new(d))
@@ -169,6 +235,8 @@ pub struct ContainerInfo {
     pub comment: Option<String>,
     /// Differencing disks: the parent image the unwritten sectors come from.
     pub parent: Option<String>,
+    /// IMZ/WLZ: the image is stored password-encrypted.
+    pub encrypted: bool,
 }
 
 impl ContainerInfo {
@@ -180,6 +248,7 @@ impl ContainerInfo {
             members: vec![],
             member: None,
             comment: None,
+            encrypted: false,
             parent: None,
         }
     }
@@ -342,8 +411,17 @@ pub(crate) fn create(
 
 /// Create a container of the same kind and variant as `like` (for rebuilding an image in
 /// place). IMZ keeps its member name and comment.
-pub(crate) fn create_like(path: &Path, like: &ContainerInfo, size: u64) -> Result<Box<dyn Disk>> {
+/// An encrypted IMZ is created encrypted with the password registered for `source`.
+pub(crate) fn create_like(
+    path: &Path,
+    like: &ContainerInfo,
+    size: u64,
+    source: &Path,
+) -> Result<Box<dyn Disk>> {
     let dynamic = matches!(like.variant.as_str(), "dynamic" | "monolithicSparse");
+    if like.encrypted {
+        set_password(path, password_for(source).as_deref());
+    }
     match like.kind {
         ContainerKind::Imz => Ok(Box::new(zip::ZipDisk::create_named(
             path,

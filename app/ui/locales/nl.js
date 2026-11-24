@@ -370,5 +370,22 @@ window.SZ_LOCALES['nl'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Apple-partitietabel",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standaard: diskettes, Zip en andere cartridges)",
-  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Uitgebreid)"
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Uitgebreid)",
+  "Encrypt this IMZ image with a password, change its password or remove it": "Deze IMZ-image versleutelen met een wachtwoord, het wachtwoord wijzigen of verwijderen",
+  "Password…": "Wachtwoord…",
+  "Password (optional)": "Wachtwoord (optioneel)",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "Versleutelt de image zoals WinImage dat doet (AES). Leeg laten voor geen versleuteling.",
+  "Password": "Wachtwoord",
+  "{name} is encrypted. Enter its password:": "{name} is versleuteld. Voer het wachtwoord in:",
+  "Wrong password. Try again.": "Onjuist wachtwoord. Probeer het opnieuw.",
+  "New password for {name}:": "Nieuw wachtwoord voor {name}:",
+  "Password to encrypt {name} with:": "Wachtwoord om {name} mee te versleutelen:",
+  "Leave empty to store the image unencrypted.": "Leeg laten om de image onversleuteld op te slaan.",
+  "Encrypts the image the way WinImage does (AES).": "Versleutelt de image zoals WinImage dat doet (AES).",
+  "Type the password again:": "Typ het wachtwoord opnieuw:",
+  "The passwords do not match.": "De wachtwoorden komen niet overeen.",
+  "{name} is now encrypted": "{name} is nu versleuteld",
+  "{name} is no longer encrypted": "{name} is niet meer versleuteld",
+  "Encryption": "Versleuteling",
+  "Password (AES)": "Wachtwoord (AES)"
 };

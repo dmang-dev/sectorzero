@@ -370,5 +370,22 @@ window.SZ_LOCALES['de'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Apple-Partitionstabelle",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standard: Disketten, Zip und andere Kassetten)",
-  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)"
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)",
+  "Encrypt this IMZ image with a password, change its password or remove it": "Dieses IMZ-Image mit einem Kennwort verschlüsseln, das Kennwort ändern oder entfernen",
+  "Password…": "Kennwort…",
+  "Password (optional)": "Kennwort (optional)",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "Verschlüsselt das Image wie WinImage (AES). Leer lassen für keine Verschlüsselung.",
+  "Password": "Kennwort",
+  "{name} is encrypted. Enter its password:": "{name} ist verschlüsselt. Kennwort eingeben:",
+  "Wrong password. Try again.": "Falsches Kennwort. Bitte erneut versuchen.",
+  "New password for {name}:": "Neues Kennwort für {name}:",
+  "Password to encrypt {name} with:": "Kennwort zum Verschlüsseln von {name}:",
+  "Leave empty to store the image unencrypted.": "Leer lassen, um das Image unverschlüsselt zu speichern.",
+  "Encrypts the image the way WinImage does (AES).": "Verschlüsselt das Image wie WinImage (AES).",
+  "Type the password again:": "Kennwort erneut eingeben:",
+  "The passwords do not match.": "Die Kennwörter stimmen nicht überein.",
+  "{name} is now encrypted": "{name} ist jetzt verschlüsselt",
+  "{name} is no longer encrypted": "{name} ist nicht mehr verschlüsselt",
+  "Encryption": "Verschlüsselung",
+  "Password (AES)": "Kennwort (AES)"
 };

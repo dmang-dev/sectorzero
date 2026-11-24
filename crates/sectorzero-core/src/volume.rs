@@ -1298,7 +1298,7 @@ impl Volume {
             .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
         let out = tmp.path().join(file_name);
         {
-            let mut to = container::create_like(&out, &like, size)?;
+            let mut to = container::create_like(&out, &like, size, path)?;
             let mut from = lock(&new_disk)?;
             container::copy_sparse(from.as_mut(), to.as_mut(), size)?;
         }
@@ -1447,7 +1447,7 @@ impl Volume {
             .file_name()
             .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
         let out = tmp.path().join(file_name);
-        let new_disk = container::share(container::create_like(&out, &like, new_size)?);
+        let new_disk = container::share(container::create_like(&out, &like, new_size, path)?);
         // Everything up to the rebuilt partition (or the whole disk) as it is; on GPT, not
         // the old backup header and entries.
         let keep = match (&resize, &layout) {

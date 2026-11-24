@@ -370,5 +370,22 @@ window.SZ_LOCALES['uk'] = {
   "MacBinary": "MacBinary",
   "Apple partition map": "Карта розділів Apple",
   "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standard: дискети, Zip та інші картриджі)",
-  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)"
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)",
+  "Encrypt this IMZ image with a password, change its password or remove it": "Зашифрувати цей образ IMZ паролем, змінити або видалити пароль",
+  "Password…": "Пароль…",
+  "Password (optional)": "Пароль (необов’язково)",
+  "Encrypts the image the way WinImage does (AES). Leave empty for none.": "Шифрує образ так само, як WinImage (AES). Залиште поле порожнім, щоб не шифрувати.",
+  "Password": "Пароль",
+  "{name} is encrypted. Enter its password:": "Файл {name} зашифровано. Введіть пароль:",
+  "Wrong password. Try again.": "Неправильний пароль. Спробуйте ще раз.",
+  "New password for {name}:": "Новий пароль для {name}:",
+  "Password to encrypt {name} with:": "Пароль для шифрування {name}:",
+  "Leave empty to store the image unencrypted.": "Залиште поле порожнім, щоб зберегти образ без шифрування.",
+  "Encrypts the image the way WinImage does (AES).": "Шифрує образ так само, як WinImage (AES).",
+  "Type the password again:": "Введіть пароль ще раз:",
+  "The passwords do not match.": "Паролі не збігаються.",
+  "{name} is now encrypted": "Файл {name} тепер зашифровано",
+  "{name} is no longer encrypted": "Файл {name} більше не зашифровано",
+  "Encryption": "Шифрування",
+  "Password (AES)": "Пароль (AES)"
 };

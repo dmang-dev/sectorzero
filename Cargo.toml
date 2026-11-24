@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/sectorzero-core", "crates/sectorzero-cli", "app/src-tauri"]
+members = ["crates/sectorzero-core", "crates/sectorzero-i18n", "crates/sectorzero-cli", "app/src-tauri"]
 exclude = ["third_party/fatfs"]
 
 [workspace.package]
@@ -12,6 +12,7 @@ authors = ["SectorZero contributors"]
 
 [workspace.dependencies]
 sectorzero-core = { path = "crates/sectorzero-core" }
+sectorzero-i18n = { path = "crates/sectorzero-i18n" }
 # FAT12/16/32 engine (MIT, rafalh/rust-fatfs).
 fatfs = "0.3.6"
 # fatfs's own timestamp type converts from chrono's local time.

@@ -45,11 +45,13 @@ impl From<Error> for CmdError {
             Error::Unsupported(_) => "unsupported",
             Error::NotFat(_) => "not_fat",
             Error::Invalid(_) => "invalid",
+            Error::PasswordNeeded(_) => "password_needed",
+            Error::WrongPassword => "wrong_password",
             Error::Io(_) => "io",
         };
         CmdError {
             kind,
-            message: e.to_string(),
+            message: sectorzero_i18n::tr(&e.to_string()),
         }
     }
 }
@@ -63,14 +65,14 @@ impl From<std::io::Error> for CmdError {
 fn invalid(message: String) -> CmdError {
     CmdError {
         kind: "invalid",
-        message,
+        message: sectorzero_i18n::tr(&message),
     }
 }
 
 fn no_image() -> CmdError {
     CmdError {
         kind: "no_image",
-        message: "No image is open.".into(),
+        message: sectorzero_i18n::tr("No image is open."),
     }
 }
 
@@ -90,8 +92,15 @@ fn opened(path: &Path, vol: &Volume) -> CmdResult<Opened> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        info: vol.info()?,
+        info: info_of(vol)?,
     })
+}
+
+/// Volume details with the engine's read-only reason in the UI's language.
+fn info_of(vol: &Volume) -> CmdResult<VolumeInfo> {
+    let mut info = vol.info()?;
+    info.read_only_reason = info.read_only_reason.map(|r| sectorzero_i18n::tr(&r));
+    Ok(info)
 }
 
 fn current_opts(state: &State<AppState>, writable: bool) -> CmdResult<(PathBuf, OpenOptions)> {
@@ -145,14 +154,25 @@ fn media_formats() -> Vec<sectorzero_core::MediaFormat> {
     sectorzero_core::MEDIA_FORMATS.to_vec()
 }
 
+/// The language engine messages are translated into (the UI's language).
+#[tauri::command]
+fn set_language(lang: String) -> String {
+    sectorzero_i18n::set_language(&lang).to_string()
+}
+
+/// `password` is for encrypted IMZ/WLZ images; it is remembered for the rest of the session.
 #[tauri::command(async)]
 fn open_image(
     path: String,
     partition: Option<usize>,
     member: Option<String>,
+    password: Option<String>,
     state: State<AppState>,
 ) -> CmdResult<Opened> {
     let path = PathBuf::from(path);
+    if let Some(pw) = password.filter(|p| !p.is_empty()) {
+        sectorzero_core::set_password(&path, Some(&pw));
+    }
     let opts = OpenOptions {
         writable: false,
         partition,
@@ -219,12 +239,16 @@ struct NewSpec {
     /// Custom layout; overrides `format` and `size_mb`.
     #[serde(default)]
     geometry: Option<Geometry>,
+    /// Encrypt an IMZ image with this password.
+    #[serde(default)]
+    password: Option<String>,
 }
 
 /// The save dialog already confirmed replacing an existing file, so this overwrites.
 #[tauri::command(async)]
 fn new_image(spec: NewSpec, state: State<AppState>) -> CmdResult<Opened> {
     let path = PathBuf::from(&spec.path);
+    sectorzero_core::set_password(&path, spec.password.as_deref().filter(|p| !p.is_empty()));
     let opts = CreateOptions {
         label: spec.label.filter(|l| !l.trim().is_empty()),
         fs: FsKind::parse(spec.fs.as_deref().unwrap_or("fat"))
@@ -257,7 +281,7 @@ fn close_image(state: State<AppState>) {
 
 #[tauri::command(async)]
 fn image_info(state: State<AppState>) -> CmdResult<VolumeInfo> {
-    Ok(open_current(&state, false)?.info()?)
+    info_of(&open_current(&state, false)?)
 }
 
 #[tauri::command(async)]
@@ -413,13 +437,19 @@ fn resize_disk(size_mb: f64, keep_partitions: bool, state: State<AppState>) -> C
 
 /// Save a copy in another container; the save dialog already confirmed replacing `dest`.
 #[tauri::command(async)]
+/// `password` encrypts an IMZ copy; without one the copy is not encrypted.
 fn save_as(
     dest: String,
     container: Option<String>,
     dynamic: bool,
+    password: Option<String>,
     state: State<AppState>,
 ) -> CmdResult<ConvertReport> {
     let (path, opts) = current_opts(&state, false)?;
+    sectorzero_core::set_password(Path::new(&dest), None);
+    if let Some(pw) = password.filter(|p| !p.is_empty()) {
+        sectorzero_core::set_password(Path::new(&dest), Some(&pw));
+    }
     Ok(convert(
         &path,
         opts.member.as_deref(),
@@ -428,6 +458,14 @@ fn save_as(
         dynamic,
         true,
     )?)
+}
+
+/// Encrypt the open IMZ/WLZ image, change its password, or (with none) decrypt it.
+#[tauri::command(async)]
+fn set_image_password(password: Option<String>, state: State<AppState>) -> CmdResult<Opened> {
+    let pw = password.filter(|p| !p.is_empty());
+    image_current(&state, true)?.set_password(pw.as_deref())?;
+    reopened(&state)
 }
 
 #[tauri::command(async)]
@@ -769,6 +807,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             formats,
             media_formats,
+            set_language,
             open_image,
             new_image,
             close_image,
@@ -788,6 +827,7 @@ fn main() {
             change_format,
             resize_disk,
             save_as,
+            set_image_password,
             make_iso,
             export_boot_image,
             geometry_of,
