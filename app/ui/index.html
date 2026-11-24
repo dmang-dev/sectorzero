@@ -22,7 +22,7 @@
       <button id="btnMkdir" data-needs-writable title="New folder">New folder</button>
       <button id="btnRename" data-needs-selection data-needs-writable title="Rename (F2)">Rename</button>
       <button id="btnDelete" data-needs-selection data-needs-writable title="Delete (Del)">Delete</button>
-      <button id="btnProps" data-needs-selection data-needs-writable title="Attributes and dates (Alt+Enter)">Properties</button>
+      <button id="btnProps" data-needs-image data-needs-selection title="Attributes and dates (Alt+Enter)">Properties</button>
     </div>
     <div class="group">
       <button id="btnLabel" data-needs-writable title="Change the volume label">Label</button>
@@ -90,9 +90,17 @@
       </label>
       <label data-kind="disk" hidden>Partition table
         <select id="newScheme">
-          <option value="none">None (one FAT volume)</option>
+          <option value="none">None (one volume)</option>
           <option value="mbr" selected>MBR</option>
           <option value="gpt">GPT</option>
+        </select>
+      </label>
+      <label id="newFsWrap">File system
+        <select id="newFs">
+          <option value="fat">FAT (12/16/32, picked from the size)</option>
+          <option value="ext2">ext2 (Linux)</option>
+          <option value="ext3">ext3 (Linux, journaled)</option>
+          <option value="ext4">ext4 (Linux)</option>
         </select>
       </label>
       <label>Container
@@ -110,7 +118,7 @@
         </select>
       </label>
       <label class="check"><input type="checkbox" id="newDynamic" checked> Dynamic (grows as data is written; VHD, VHDX, VMDK, VDI)</label>
-      <label>Volume label (optional, up to 11 characters)
+      <label><span id="newLabelText">Volume label (optional, up to 11 characters)</span>
         <input id="newLabel" maxlength="11" autocomplete="off" spellcheck="false">
       </label>
       <menu>
@@ -275,12 +283,12 @@
       </fieldset>
       <label>Modified <input id="propsModified" type="datetime-local" step="2" min="1980-01-01T00:00" max="2107-12-31T23:59"></label>
       <label>Created <input id="propsCreated" type="datetime-local" step="1" min="1980-01-01T00:00" max="2107-12-31T23:59"></label>
-      <label>Accessed (date only) <input id="propsAccessed" type="date" min="1980-01-01" max="2107-12-31"></label>
+      <label><span id="propsAccessedText">Accessed (date only)</span> <input id="propsAccessed" type="date" min="1980-01-01" max="2107-12-31"></label>
       <label class="check" id="propsRecursiveWrap"><input type="checkbox" id="propsRecursive"> Also change everything inside the selected folders</label>
-      <p class="hint">Only the fields you change are written. FAT stores modified times in 2-second steps.</p>
+      <p class="hint" id="propsNote"></p>
       <menu>
-        <button value="cancel" formnovalidate>Cancel</button>
-        <button value="ok" class="primary">Apply</button>
+        <button value="cancel" id="propsCancel" formnovalidate>Cancel</button>
+        <button value="ok" id="propsApply" class="primary">Apply</button>
       </menu>
     </form>
   </dialog>

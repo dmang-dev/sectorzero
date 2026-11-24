@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use sectorzero_core::{
     BootPlatform, BootSectorEdit, Checksums, ContainerKind, CreateOptions, Entry, EntryEdit,
-    FLOPPY_FORMATS, FloppyFormat, Geometry, Image, IsoBuildOptions, Layout, ListingFormat,
+    FLOPPY_FORMATS, FloppyFormat, FsKind, Geometry, Image, IsoBuildOptions, Layout, ListingFormat,
     NewImage, OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo, build_iso, checksum_file,
     convert, create_differencing, probe, render_listing, truncate_image,
 };
@@ -54,6 +54,14 @@ enum Table {
     None,
     Mbr,
     Gpt,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum FsArg {
+    Fat,
+    Ext2,
+    Ext3,
+    Ext4,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -280,7 +288,11 @@ enum Cmd {
         spec: FormatSpec,
         #[arg(short, long)]
         label: Option<String>,
-        /// Partition table for a hard disk image (one FAT partition at 1 MiB).
+        /// File system: FAT (12/16/32 from the size), ext2, ext3 (ext2 with a journal) or
+        /// ext4 (extents and metadata checksums; journaled from 2 MiB up).
+        #[arg(long = "fs", value_enum, default_value = "fat")]
+        fs: FsArg,
+        /// Partition table for a hard disk image (one partition at 1 MiB).
         #[arg(short, long, value_enum, default_value = "none")]
         table: Table,
         #[arg(short, long, value_enum)]
@@ -459,13 +471,15 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Show or change attributes and dates of files or folders inside the image.
+    /// Show or change attributes and dates of files or folders inside the image (FAT and
+    /// ext; on ext, read-only is the absence of write permission and H/S/A do not exist).
     Attrib {
         #[command(flatten)]
         img: Img,
         #[arg(required = true)]
         paths: Vec<String>,
         /// Attributes to set: any of R (read-only), H (hidden), S (system), A (archive).
+        /// ext has only R.
         #[arg(long, value_name = "RHSA")]
         set: Option<String>,
         /// Attributes to clear.
@@ -477,7 +491,7 @@ enum Cmd {
         /// Creation time, local: YYYY-MM-DD[ HH:MM[:SS]].
         #[arg(long)]
         created: Option<String>,
-        /// Last-access date: YYYY-MM-DD.
+        /// Last-access time, local: YYYY-MM-DD[ HH:MM[:SS]] (FAT keeps only the date).
         #[arg(long)]
         accessed: Option<String>,
         /// Apply to everything inside the given folders too.
@@ -595,6 +609,7 @@ fn run(cli: Cli) -> Result<()> {
             image,
             spec,
             label,
+            fs,
             table,
             container,
             fixed,
@@ -602,6 +617,12 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let opts = CreateOptions {
                 label,
+                fs: match fs {
+                    FsArg::Fat => FsKind::Fat,
+                    FsArg::Ext2 => FsKind::Ext2,
+                    FsArg::Ext3 => FsKind::Ext3,
+                    FsArg::Ext4 => FsKind::Ext4,
+                },
                 container: container.map(Into::into),
                 scheme: match table {
                     Table::None => PartitionScheme::None,
@@ -1225,6 +1246,9 @@ fn print_volume(i: &VolumeInfo) {
         i.fs_type,
         if i.fs_writable { "" } else { " (read-only)" }
     );
+    if let Some(why) = &i.read_only_reason {
+        println!("read-only    {why}");
+    }
     if let Some(f) = i.floppy_format {
         println!("format       {f}");
     }
@@ -1237,20 +1261,27 @@ fn print_volume(i: &VolumeInfo) {
         }
     );
     if !i.volume_id.is_empty() {
-        println!("serial       {}", i.volume_id);
+        let what = if i.fs_type.starts_with("ext") {
+            "uuid"
+        } else {
+            "serial"
+        };
+        println!("{what:<12} {}", i.volume_id);
     }
-    println!(
-        "{:<12} {}",
-        if i.iso.is_some() { "system" } else { "oem" },
-        i.oem_name
-    );
+    if !i.oem_name.is_empty() {
+        println!(
+            "{:<12} {}",
+            if i.iso.is_some() { "system" } else { "oem" },
+            i.oem_name
+        );
+    }
     println!("sector size  {}", i.bytes_per_sector);
     println!("cluster size {}", i.cluster_size);
     println!(
         "capacity     {} bytes ({} clusters)",
         i.total_bytes, i.total_clusters
     );
-    if i.fs_writable {
+    if i.iso.is_none() {
         println!(
             "free         {} bytes ({} clusters)",
             i.free_bytes, i.free_clusters

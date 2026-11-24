@@ -11,6 +11,7 @@ use crate::util::*;
 
 pub(crate) const BASIC_DATA: &str = "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7";
 pub(crate) const EFI_SYSTEM: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
+pub(crate) const LINUX_FS: &str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
 /// New partitions start at 1 MiB, like current Windows and Linux tools.
 pub(crate) const ALIGN_SECTORS: u64 = 2048;
 const GPT_ENTRIES: u64 = 128;
@@ -42,7 +43,8 @@ pub struct PartitionInfo {
     pub start_lba: u64,
     pub sectors: u64,
     pub sector_size: u32,
-    /// File system found in the partition: "FAT", "NTFS", "exFAT", or None.
+    /// File system found in the partition: "FAT", "NTFS", "exFAT", "ext2", "ext3", "ext4",
+    /// or None.
     pub fs: Option<&'static str>,
     pub is_fat: bool,
 }
@@ -101,7 +103,13 @@ pub(crate) fn looks_like_fat_boot_sector(s: &[u8]) -> bool {
         && s[21] >= 0xF0
 }
 
-fn fs_of(s: &[u8]) -> Option<&'static str> {
+/// The file system whose boot sector or superblock starts `s` (the first 2 KiB of a volume;
+/// with only 512 bytes, ext is not detected).
+pub(crate) fn fs_of(s: &[u8]) -> Option<&'static str> {
+    boot_fs_of(s).or_else(|| crate::ext::fs_name(s))
+}
+
+fn boot_fs_of(s: &[u8]) -> Option<&'static str> {
     if &s[3..11] == b"NTFS    " {
         Some("NTFS")
     } else if &s[3..11] == b"EXFAT   " {
@@ -166,8 +174,18 @@ fn read(disk: &mut dyn Disk, offset: u64, len: usize) -> io::Result<Vec<u8>> {
     Ok(b)
 }
 
+/// Read up to `len` bytes at `offset`, zero-filling past the end of the disk.
+fn read_head(disk: &mut dyn Disk, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+    let mut b = vec![0u8; len];
+    let n = disk.size().saturating_sub(offset).min(len as u64) as usize;
+    if n > 0 {
+        disk.read_at(offset, &mut b[..n])?;
+    }
+    Ok(b)
+}
+
 fn probe_fs(disk: &mut dyn Disk, offset: u64) -> io::Result<Option<&'static str>> {
-    Ok(fs_of(&read(disk, offset, 512)?))
+    Ok(fs_of(&read_head(disk, offset, 2048)?))
 }
 
 pub(crate) fn is_iso(disk: &mut dyn Disk) -> io::Result<bool> {
@@ -180,8 +198,16 @@ pub(crate) fn is_iso(disk: &mut dyn Disk) -> io::Result<bool> {
 
 pub(crate) fn detect(disk: &mut dyn Disk) -> Result<Layout> {
     let ss = u64::from(disk.sector_size());
-    let s0 = read(disk, 0, 512)?;
-    if fs_of(&s0).is_some() {
+    let head = read_head(disk, 0, 2048)?;
+    let s0 = head[..512].to_vec();
+    if boot_fs_of(&s0).is_some() {
+        return Ok(Layout::BareVolume);
+    }
+    // An ext superblock at byte 1024, unless sector 0 is a GPT protective MBR (whose entry
+    // array could in theory look like one).
+    let protective =
+        s0[510] == 0x55 && s0[511] == 0xAA && (0..4).any(|i| s0[446 + i * 16 + 4] == 0xEE);
+    if !protective && crate::ext::fs_name(&head).is_some() {
         return Ok(Layout::BareVolume);
     }
     if is_iso(disk)? {

@@ -22,19 +22,23 @@ Windows first. Linux builds come from CI; macOS and other platforms come later.
 | Containers | Raw sector images (`.ima` `.img` `.vfd` `.flp` `.dsk`, short "truncated" images read as zero-padded), split raw sets (`.001` `.002` …). WinImage IMZ (zip) and WLZ (zip holding several images). VHD fixed, dynamic and differencing, including Virtual PC undo disks (`.vud`). VHDX (dynamic and fixed, with log replay). VMDK monolithicSparse, monolithicFlat and descriptor + extents. VirtualBox VDI (fixed and dynamic). QCOW2 v2/v3 (compressed clusters and backing files read; writes refused for encrypted, snapshotted or zstd images). PC-98 NHD, HDI and FDI. All read/write. CD images: ISO, BIN/CUE (MODE1/MODE2, 2048–2448-byte sectors), Nero NRG and Alcohol MDS/MDF, read-only. |
 | Layout | Bare FAT volumes, MBR disks (primary and logical partitions), GPT disks, ISO 9660 CD/DVD images |
 | Devices | On Linux, block devices such as `/dev/fd0` and `/dev/sdb` open like raw images (checked in a QEMU guest with a virtual floppy and USB stick). Windows drives (`\\.\PhysicalDriveN`, `\\.\A:`) are not supported yet. |
-| File systems | FAT12 / FAT16 / FAT32 with long file names (read/write). ISO 9660 with Joliet and Rock Ridge names (read-only), El Torito boot catalog |
-| Create | Every standard floppy format (160 KB to 2.88 MB, including DMF and 1.68/1.72 MB); custom layouts (total sectors, sectors per track, heads, cluster size, root entries, FAT count and type, media byte, hidden sectors, drive number), or the layout copied from another image or boot sector; FAT volumes and MBR or GPT hard disk images of any size, in any of the writable containers above; differencing VHDs over an existing VHD |
-| Edit | Inject files and folders, extract, delete, create folders, rename/move. Host file timestamps are kept. File attributes (read-only, hidden, system, archive) and modified/created/accessed dates, also recursively. Replace a file inside an ISO in place when the new file fits in the old one's sectors. |
+| File systems | FAT12 / FAT16 / FAT32 with long file names (read/write). ext2, ext3 and ext4 (read/write: extents, 64-bit, flex_bg, metadata checksums, uninitialized groups, hashed folders; the journal must be clean and stays clean; inline data, encryption, bigalloc, quotas and casefolding open read-only). NTFS (read-only, through the `ntfs` crate; compressed and encrypted files are refused). ISO 9660 with Joliet and Rock Ridge names (read-only), El Torito boot catalog |
+| Create | ext2, ext3 or ext4 on any floppy or hard disk size (MBR type 0x83 / GPT Linux filesystem when partitioned). Every standard floppy format (160 KB to 2.88 MB, including DMF and 1.68/1.72 MB); custom layouts (total sectors, sectors per track, heads, cluster size, root entries, FAT count and type, media byte, hidden sectors, drive number), or the layout copied from another image or boot sector; FAT volumes and MBR or GPT hard disk images of any size, in any of the writable containers above; differencing VHDs over an existing VHD |
+| Edit | Inject files and folders, extract, delete, create folders, rename/move. Host file timestamps are kept. File attributes (read-only, hidden, system, archive) and modified/created/accessed dates, also recursively; on ext, read-only and the three times (read-only clears the write permission bits). NTFS and ISO properties are shown read-only. Replace a file inside an ISO in place when the new file fits in the old one's sectors. |
 | Tools | Volume label; boot sector view/edit (OEM name, serial, geometry, hidden sectors, drive number), export, and boot-code import that keeps the BPB; MBR export/import; defragment (with optional free-space clearing); change format / resize, keeping files, dates, attributes, label, serial and boot code; save as another container; truncate unused space off raw images; checksums (CRC-32, Adler-32, MD5, SHA-1, SHA-256) of the disk inside an image (the same for every container), of the image file, or of a file inside it; file lists as text, CSV or HTML; self-extracting images (`s0 sfx`); build ISO images (optionally bootable, BIOS or UEFI); save an ISO's boot image |
 | Desktop app | Everything above, plus double-click to open a file with its default program, and dragging files out to Explorer or the desktop |
 
-Verified against other software: the original IMZ tool's SDK reads images made here (IMA, IMZ, VHD fixed/dynamic,
+Verified against other software: Linux (Alpine, in QEMU) checks SectorZero's ext2/ext3/ext4
+images clean with `e2fsck -fn`, mounts them and reads every file, and SectorZero reads
+ext2/ext3/ext4 volumes made by mke2fs and filled by the kernel (large, sparse, hard-linked and
+symlinked files, hashed folders), writes to them (including attribute and date changes), and
+`e2fsck` still finds them clean. The original IMZ tool's SDK reads images made here (IMA, IMZ, VHD fixed/dynamic,
 VMDK sparse/flat, MBR and GPT disks, defragmented and resized images) with byte-identical files,
 and SectorZero reads the SDK's VHD and VMDK output. Windows mounts the ISO images. VHDX is
 checked by this project's own tests only so far.
 
-Not yet (see RESEARCH.md §5): physical drives on Windows, encrypted IMZ, exFAT/NTFS/ext2-4, writing to ISO
-images beyond in-place replacement, resizing partitioned disks.
+Not yet (see RESEARCH.md §5): physical drives on Windows, encrypted IMZ, exFAT, writing to NTFS,
+writing to ISO images beyond in-place replacement, resizing partitioned disks.
 
 ## Layout
 
@@ -101,6 +105,7 @@ s0 new data.img -s 64M -t none               # bare FAT16 volume
 s0 new odd.ima --sectors 1600 --sectors-per-track 10 --heads 2 --fat 12 --root-entries 64
 s0 new copy.img --like other.ima             # same layout as another image or a 512-byte boot sector
 s0 new disk.vhdx -s 2G -t gpt -l DATA        # dynamic VHDX with a GPT partition (--fixed for fixed size)
+s0 new linux.img -s 256M -t mbr --fs ext4     # ext2/ext3/ext4 instead of FAT; inject/extract/rm/mv/attrib work the same
 s0 inject boot.ima .\files\* --to /tools     # copy files in (folders recurse)
 s0 ls boot.ima -r                            # list everything
 s0 extract boot.ima /tools -o .\out          # copy out (no path = everything)
