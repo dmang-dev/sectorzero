@@ -8,6 +8,15 @@ SectorZero is an independent project. It is not affiliated with or endorsed by W
 Gilles Vollant Software; WinImage is their trademark and is named here only to describe
 file-format compatibility.
 
+## Disclaimer
+
+SectorZero reads and writes disk images and physical media (floppy disks, USB sticks, memory
+cards, hard disks) at the sector level. Writing, wiping, resizing or editing can destroy data,
+and reading old or damaged media can stress it further. Use it at your own risk: keep backups,
+and check the target drive before writing to it. SectorZero is provided "as is", without
+warranty of any kind, and its authors and contributors are not liable for any data loss,
+hardware damage or other harm from using it. The [MIT license](LICENSE) has the full terms.
+
 See [RESEARCH.md](RESEARCH.md) for WinImage's full feature set and how this project maps onto it.
 
 ## Status

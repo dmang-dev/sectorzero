@@ -423,6 +423,13 @@ pub fn convert_with_progress(
             "source and destination are the same file".into(),
         ));
     }
+    // Reading a drive: keep Windows from changing it mid-copy where its volumes can be
+    // locked (not the system disk, nor a volume with open files: those are read as they are).
+    let _locks = if crate::device::is_device_path(src) {
+        crate::device::lock_for_reading(src).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let mut from = container::open(src, false, member)?;
     let size = disk_size_of(from.as_mut())?;
     let kind = kind.unwrap_or_else(|| ContainerKind::from_path(dst));
@@ -440,6 +447,24 @@ pub fn convert_with_progress(
             Err(e.into())
         }
     }
+}
+
+/// Checksums of the virtual disk inside an image (or of a drive) without looking for a file
+/// system, so a blank or wiped disk can be hashed too. The same values as
+/// [`Image::checksum_disk`] gives for a disk it can open.
+pub fn checksum_virtual_disk(src: &Path, member: Option<&str>) -> Result<Checksums> {
+    let mut from = container::open(src, false, member)?;
+    let size = disk_size_of(from.as_mut())?;
+    let mut h = Hasher::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut at = 0;
+    while at < size {
+        let n = (size - at).min(buf.len() as u64) as usize;
+        from.read_at(at, &mut buf[..n])?;
+        h.update(&buf[..n]);
+        at += n as u64;
+    }
+    Ok(h.finish())
 }
 
 /// The full size of the disk an image holds, in whole sectors: a truncated floppy or volume

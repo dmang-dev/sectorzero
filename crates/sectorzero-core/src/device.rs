@@ -266,6 +266,14 @@ pub(crate) fn open(path: &Path, writable: bool) -> Result<DeviceDisk> {
     })
 }
 
+/// Lock the volumes of a whole drive that is about to be read as a source (Windows), so
+/// that nothing changes it mid-copy: Windows itself writes to a mounted volume now and then
+/// (System Volume Information, for one). The locks hold until the handles are dropped.
+/// A volume path (`\\.\A:`) or another platform gives no locks.
+pub(crate) fn lock_for_reading(path: &Path) -> Result<Vec<File>> {
+    sys::lock_for_reading(path).map_err(|e| access_error(path, e))
+}
+
 fn access_error(path: &Path, e: Error) -> Error {
     match e {
         Error::Io(io) if io.kind() == io::ErrorKind::PermissionDenied => Error::Invalid(format!(
@@ -387,6 +395,12 @@ pub fn write_image_to_drive(
         )));
     }
     let info = writable_drive(drive, opts.allow_fixed)?;
+    // A drive-to-drive copy: the source must not change while it is copied and verified.
+    let _source_locks = if is_device_path(image) {
+        lock_for_reading(image)?
+    } else {
+        Vec::new()
+    };
     let mut src = crate::container::open(image, false, opts.member.as_deref())?;
     let size = crate::image::disk_size_of(src.as_mut())?;
     let mut dev = open(dpath, true)?;
@@ -885,21 +899,7 @@ mod sys {
             }
             if let Some(n) = disk.filter(|_| disk_number(&p).is_some()) {
                 // A whole disk: lock and dismount every volume on it first.
-                for (vol, mounts, disks) in volumes() {
-                    if !disks.contains(&n) {
-                        continue;
-                    }
-                    let v = open_rw(&vol, true)?;
-                    let what = mounts.first().cloned().unwrap_or(vol.clone());
-                    ioctl(&v, FSCTL_LOCK_VOLUME, &[], 0).map_err(|e| {
-                        Error::Invalid(format!(
-                            "volume {what} on {p} is in use ({e}); close the programs and \
-                             windows using it and try again"
-                        ))
-                    })?;
-                    ioctl(&v, FSCTL_DISMOUNT_VOLUME, &[], 0)?;
-                    locks.push(v);
-                }
+                locks = lock_volumes(&p, n, true)?;
             }
         }
         let f = open_rw(&p, writable)?;
@@ -923,6 +923,38 @@ mod sys {
             return Err(Error::Invalid(format!("{p}: no medium in the drive")));
         }
         Ok((f, len, sector, locks))
+    }
+
+    /// Lock every volume on disk `n` (`p` is its path, for messages), dismounting them too
+    /// when the disk is about to be overwritten.
+    fn lock_volumes(p: &str, n: u32, dismount: bool) -> Result<Vec<File>> {
+        let mut locks = Vec::new();
+        for (vol, mounts, disks) in volumes() {
+            if !disks.contains(&n) {
+                continue;
+            }
+            let v = open_rw(&vol, true)?;
+            let what = mounts.first().cloned().unwrap_or(vol.clone());
+            ioctl(&v, FSCTL_LOCK_VOLUME, &[], 0).map_err(|e| {
+                Error::Invalid(format!(
+                    "volume {what} on {p} is in use ({e}); close the programs and \
+                     windows using it and try again"
+                ))
+            })?;
+            if dismount {
+                ioctl(&v, FSCTL_DISMOUNT_VOLUME, &[], 0)?;
+            }
+            locks.push(v);
+        }
+        Ok(locks)
+    }
+
+    pub(super) fn lock_for_reading(path: &Path) -> Result<Vec<File>> {
+        let p = path.to_string_lossy().replace('/', "\\");
+        match disk_number(&p) {
+            Some(n) => lock_volumes(&p, n, false),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Ask Windows to re-read the partition table after a whole-disk write.
@@ -1093,6 +1125,11 @@ mod sys {
     }
 
     pub(super) fn after_write(_f: &File) {}
+
+    /// Linux has no volume locks; writing refuses mounted drives instead.
+    pub(super) fn lock_for_reading(_path: &Path) -> Result<Vec<File>> {
+        Ok(Vec::new())
+    }
 
     /// Unlock the door (SCSI disks lock it while open), then eject: SCSI START STOP UNIT
     /// through CDROMEJECT, which Linux accepts on any SCSI block device, or FDEJECT.

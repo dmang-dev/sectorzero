@@ -41,8 +41,8 @@ pub use format::{
     FLOPPY_FORMATS, FloppyFormat, Geometry, MEDIA_FORMATS, MediaFormat, MediaLayout, NewImage,
 };
 pub use image::{
-    ConvertReport, Image, OpenOptions, TruncateReport, convert, convert_with_progress,
-    truncate_image,
+    ConvertReport, Image, OpenOptions, TruncateReport, checksum_virtual_disk, convert,
+    convert_with_progress, truncate_image,
 };
 pub use iso::{BootEntry, IsoInfo};
 pub use iso_build::{BootPlatform, IsoBuildOptions, IsoBuildReport, build_iso};

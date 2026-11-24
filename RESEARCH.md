@@ -255,8 +255,24 @@ asks Windows to re-read the partition table (IOCTL_DISK_UPDATE_PROPERTIES). The 
 the Windows folder (or `/` on Linux) is always refused, fixed disks need an explicit
 "allow fixed" flag, and Linux refuses drives with mounted partitions. Opening a drive needs
 administrator rights (root on Linux). Checked on real block devices in the Alpine guest
-(floppy drive, USB stick, virtio disk); on Windows, only listing and the refusals have been
-tried so far, since this machine's only disk is the system disk.
+(floppy drive, USB stick, virtio disk).
+
+On Windows (2026-11-24), checked as administrator on two 64 MiB VHDs attached with
+`Mount-DiskImage`, which appear as `\\.\PhysicalDriveN` (BusType "File Backed Virtual"). All of
+these passed:
+- listing;
+- writing an image with verify;
+- listing, injecting and `info` straight on the drive;
+- reading the drive into a VHDX;
+- a drive-to-drive copy with verify;
+- a wipe (random pass, then zeros), with the drive's checksum equal to that of zeros;
+- Windows reading the files back afterwards.
+
+That run found that a mounted source drive changes under a drive-to-drive copy, since Windows
+itself writes to it (System Volume Information). The source's volumes are now locked
+(FSCTL_LOCK_VOLUME, without dismounting) for the copy and its verify, and, where they can be,
+while a drive is read into an image. `s0 checksum` also hashes a disk without a file system (a
+wiped drive) instead of refusing it.
 
 exFAT (2026-11-23, `exfat.rs`, written from Microsoft's published exFAT specification): read,
 write and create. Mounting verifies the boot region checksum and the up-case table checksum;
