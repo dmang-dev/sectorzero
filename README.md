@@ -105,7 +105,12 @@ need Windows 10 or later (Rust's minimum; the app also needs WebView2). To relea
 The files land on a draft GitHub release to review and publish. Running the workflow by hand
 builds the same files as workflow artifacts without making a release.
 
+The release workflow refuses a tag that does not match those two versions.
+
 The binaries are not code-signed yet, so Windows SmartScreen warns about an unknown publisher.
+
+Dependabot (`.github/dependabot.yml`) opens weekly pull requests for Cargo, npm and GitHub
+Actions updates; minor and patch updates come grouped, and CI runs on each.
 
 ## CLI
 

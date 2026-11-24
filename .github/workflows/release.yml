@@ -14,8 +14,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # A tag must match the version the binaries report.
+  check:
+    name: Check version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml and tauri.conf.json
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          app=$(sed -n 's/^  "version": "\(.*\)",/\1/p' app/src-tauri/tauri.conf.json)
+          echo "tag $tag, Cargo.toml $cargo, tauri.conf.json $app"
+          if [ "$tag" != "$cargo" ] || [ "$tag" != "$app" ]; then
+            echo "::error::tag v$tag does not match Cargo.toml ($cargo) and tauri.conf.json ($app)"
+            exit 1
+          fi
+
   build:
     name: Build (${{ matrix.name }})
+    needs: check
     strategy:
       fail-fast: false
       matrix:
@@ -114,4 +134,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          generate_release_notes: true
           files: dist/*
