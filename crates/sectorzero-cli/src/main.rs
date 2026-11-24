@@ -8,11 +8,11 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use sectorzero_core::{
     BootPlatform, BootSectorEdit, Checksums, ContainerKind, CreateOptions, DriveWipeOptions,
-    DriveWriteOptions, Entry, EntryEdit, FLOPPY_FORMATS, FloppyFormat, FsKind, Geometry, Image,
-    IsoBuildOptions, Layout, ListingFormat, MEDIA_FORMATS, MediaFormat, MediaLayout, NewImage,
-    OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo, WipePattern, build_iso, checksum_file,
-    convert_with_progress, create_differencing, drive_info, list_drives, probe, render_listing,
-    truncate_image, wipe_drive, write_image_to_drive,
+    DriveWriteOptions, Entry, EntryEdit, FLOPPY_FORMATS, FloppyFormat, ForkMode, FsKind, Geometry,
+    Image, IsoBuildOptions, Layout, ListingFormat, MEDIA_FORMATS, MediaFormat, MediaLayout,
+    NewImage, OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo, WipePattern, build_iso,
+    checksum_file, convert_with_progress, create_differencing, drive_info, list_drives, probe,
+    render_listing, truncate_image, wipe_drive, write_image_to_drive,
 };
 
 #[derive(Parser)]
@@ -56,6 +56,25 @@ enum Table {
     None,
     Mbr,
     Gpt,
+    /// Apple partition map (HFS only).
+    Apm,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Forks {
+    Data,
+    Appledouble,
+    Macbinary,
+}
+
+impl Forks {
+    fn mode(self) -> ForkMode {
+        match self {
+            Forks::Data => ForkMode::Data,
+            Forks::Appledouble => ForkMode::AppleDouble,
+            Forks::Macbinary => ForkMode::MacBinary,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -65,6 +84,9 @@ enum FsArg {
     Ext3,
     Ext4,
     Exfat,
+    Hfs,
+    #[value(hide = true)]
+    Hfsplus,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -342,6 +364,11 @@ enum Cmd {
         /// Overwrite existing files.
         #[arg(long)]
         force: bool,
+        /// Macintosh resource forks and Finder info (HFS / HFS+): data = data fork only,
+        /// appledouble = plus a `._name` file per file, macbinary = one MacBinary III
+        /// `name.bin` per file.
+        #[arg(long, value_enum, default_value_t = Forks::Data)]
+        forks: Forks,
     },
     /// Copy files or folders from this computer into the image.
     Inject {
@@ -356,6 +383,11 @@ enum Cmd {
         /// Overwrite existing files in the image.
         #[arg(long)]
         force: bool,
+        /// Macintosh resource forks and Finder info (HFS / HFS+): data = plain files,
+        /// appledouble = take them from the `._name` file next to each file, macbinary =
+        /// unpack MacBinary files (other files go in as they are).
+        #[arg(long, value_enum, default_value_t = Forks::Data)]
+        forks: Forks,
     },
     /// Create a folder (and its parents) inside the image.
     Mkdir {
@@ -384,7 +416,8 @@ enum Cmd {
     Label {
         #[command(flatten)]
         img: Img,
-        /// New label (up to 11 characters). Omit to show the current one.
+        /// New label (FAT: up to 11 characters; HFS: 27, HFS+: 255). Omit to show the
+        /// current one.
         label: Option<String>,
         /// Remove the label.
         #[arg(long, conflicts_with = "label")]
@@ -617,13 +650,26 @@ enum Cmd {
 }
 
 fn main() {
-    if let Some(payload) = sfx::detect() {
-        std::process::exit(sfx::run(payload));
-    }
-    if let Err(e) = run(Cli::parse()) {
-        eprintln!("s0: {e:#}");
-        std::process::exit(1);
-    }
+    // `run` is one large match; unoptimized builds need more than Windows' 1 MiB main
+    // thread stack for it, so the work runs on a thread with room to spare.
+    let code = std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(|| {
+            if let Some(payload) = sfx::detect() {
+                return sfx::run(payload);
+            }
+            match run(Cli::parse()) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("s0: {e:#}");
+                    1
+                }
+            }
+        })
+        .expect("cannot start the main thread")
+        .join()
+        .unwrap_or(101);
+    std::process::exit(code);
 }
 
 fn open(img: &Img, writable: bool) -> Result<Volume> {
@@ -911,12 +957,15 @@ fn run(cli: Cli) -> Result<()> {
                     FsArg::Ext3 => FsKind::Ext3,
                     FsArg::Ext4 => FsKind::Ext4,
                     FsArg::Exfat => FsKind::Exfat,
+                    FsArg::Hfs => FsKind::Hfs,
+                    FsArg::Hfsplus => FsKind::HfsPlus,
                 },
                 container: container.map(Into::into),
                 scheme: match table {
                     Table::None => PartitionScheme::None,
                     Table::Mbr => PartitionScheme::Mbr,
                     Table::Gpt => PartitionScheme::Gpt,
+                    Table::Apm => PartitionScheme::Apm,
                 },
                 dynamic: !fixed,
                 overwrite: force,
@@ -1015,7 +1064,9 @@ fn run(cli: Cli) -> Result<()> {
             paths,
             out,
             force,
+            forks,
         } => {
+            let forks = forks.mode();
             let vol = open(&img, false)?;
             let mut total = Stats::default();
             let paths = if paths.is_empty() {
@@ -1026,7 +1077,7 @@ fn run(cli: Cli) -> Result<()> {
             for p in &paths {
                 add(
                     &mut total,
-                    vol.extract(p, &out, force)
+                    vol.extract_with(p, &out, force, forks)
                         .with_context(|| format!("extracting {p:?}"))?,
                 );
             }
@@ -1037,13 +1088,14 @@ fn run(cli: Cli) -> Result<()> {
             files,
             to,
             force,
+            forks,
         } => {
             let vol = open(&img, true)?;
             let mut total = Stats::default();
             for f in &files {
                 add(
                     &mut total,
-                    vol.inject(f, &to, force)
+                    vol.inject_with(f, &to, force, forks.mode())
                         .with_context(|| format!("injecting {}", f.display()))?,
                 );
             }
@@ -1541,13 +1593,13 @@ fn print_layout(layout: &Layout) {
         Layout::BareVolume => println!("layout       bare volume (no partition table)"),
         Layout::Iso => println!("layout       ISO 9660 CD/DVD image"),
         Layout::Unknown => println!("layout       unknown"),
-        Layout::Mbr(parts) | Layout::Gpt(parts) => {
+        Layout::Mbr(parts) | Layout::Gpt(parts) | Layout::Apm(parts) => {
             println!(
                 "layout       {}",
-                if matches!(layout, Layout::Gpt(_)) {
-                    "GPT"
-                } else {
-                    "MBR"
+                match layout {
+                    Layout::Gpt(_) => "GPT",
+                    Layout::Apm(_) => "Apple partition map",
+                    _ => "MBR",
                 }
             );
             for p in parts {

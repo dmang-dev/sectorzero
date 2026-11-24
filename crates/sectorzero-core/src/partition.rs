@@ -26,6 +26,8 @@ pub enum PartitionScheme {
     None,
     Mbr,
     Gpt,
+    /// Apple Partition Map (for HFS volumes).
+    Apm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,13 +69,15 @@ pub enum Layout {
     Iso,
     Mbr(Vec<PartitionInfo>),
     Gpt(Vec<PartitionInfo>),
+    /// Apple Partition Map (Macintosh disks, Mac-formatted Zip, Jaz and SyQuest cartridges).
+    Apm(Vec<PartitionInfo>),
     Unknown,
 }
 
 impl Layout {
     pub fn partitions(&self) -> &[PartitionInfo] {
         match self {
-            Layout::Mbr(p) | Layout::Gpt(p) => p,
+            Layout::Mbr(p) | Layout::Gpt(p) | Layout::Apm(p) => p,
             _ => &[],
         }
     }
@@ -106,7 +110,9 @@ pub(crate) fn looks_like_fat_boot_sector(s: &[u8]) -> bool {
 /// The file system whose boot sector or superblock starts `s` (the first 2 KiB of a volume;
 /// with only 512 bytes, ext is not detected).
 pub(crate) fn fs_of(s: &[u8]) -> Option<&'static str> {
-    boot_fs_of(s).or_else(|| crate::ext::fs_name(s))
+    boot_fs_of(s)
+        .or_else(|| crate::ext::fs_name(s))
+        .or_else(|| crate::hfs::fs_name(s))
 }
 
 fn boot_fs_of(s: &[u8]) -> Option<&'static str> {
@@ -153,6 +159,7 @@ fn gpt_type_name(g: &str) -> &'static str {
     match g {
         EFI_SYSTEM => "EFI system",
         BASIC_DATA => "Basic data",
+        APPLE_HFS => "Apple HFS / HFS+",
         "E3C9E316-0B5C-4DB8-817D-F92DF00215AE" => "Microsoft reserved",
         "DE94BBA4-06D1-4D40-A16A-BFD50179D6AC" => "Windows recovery",
         "5808C8AA-7E8F-42E0-85D2-E1E90434CFB3" => "LDM metadata",
@@ -161,7 +168,6 @@ fn gpt_type_name(g: &str) -> &'static str {
         "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F" => "Linux swap",
         "E6D6D379-F507-44C2-A23C-238F2A3DF928" => "Linux LVM",
         "21686148-6449-6E6F-744E-656564454649" => "BIOS boot",
-        "48465300-0000-11AA-AA11-00306543ECAC" => "Apple HFS+",
         "7C3457EF-0000-11AA-AA11-00306543ECAC" => "Apple APFS",
         "516E7CB4-6ECF-11D6-8FF8-00022D09712B" => "FreeBSD",
         _ => "Unknown",
@@ -207,11 +213,17 @@ pub(crate) fn detect(disk: &mut dyn Disk) -> Result<Layout> {
     // array could in theory look like one).
     let protective =
         s0[510] == 0x55 && s0[511] == 0xAA && (0..4).any(|i| s0[446 + i * 16 + 4] == 0xEE);
-    if !protective && crate::ext::fs_name(&head).is_some() {
+    if !protective && (crate::ext::fs_name(&head).is_some() || crate::hfs::fs_name(&head).is_some())
+    {
         return Ok(Layout::BareVolume);
     }
     if is_iso(disk)? {
         return Ok(Layout::Iso);
+    }
+    if &s0[0..2] == b"ER"
+        && let Some(parts) = read_apm(disk)?
+    {
+        return Ok(Layout::Apm(parts));
     }
     if s0[510] != 0x55 || s0[511] != 0xAA {
         return Ok(Layout::Unknown);
@@ -291,6 +303,89 @@ fn mbr_part(
         fs,
         is_fat: fs == Some("FAT"),
     })
+}
+
+/// NUL-terminated ASCII field of a partition map entry.
+fn apm_str(b: &[u8]) -> String {
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    String::from_utf8_lossy(&b[..end]).trim().to_string()
+}
+
+fn apm_type_name(t: &str) -> String {
+    match t {
+        "Apple_HFS" => "Mac OS (HFS / HFS+)".into(),
+        "Apple_HFSX" => "Mac OS Extended (HFSX)".into(),
+        "Apple_partition_map" => "Partition map".into(),
+        "Apple_Free" => "Free space".into(),
+        "Apple_Patches" => "Patches".into(),
+        "Apple_UNIX_SVR2" => "A/UX or Unix".into(),
+        "Apple_PRODOS" => "ProDOS".into(),
+        "Apple_Boot" | "Apple_Bootstrap" => "Boot".into(),
+        t if t.starts_with("Apple_Driver") || t.ends_with("_Driver") || t.contains("Driver") => {
+            "Driver".into()
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Apple Partition Map, from Inside Macintosh: Devices (SCSI Manager): a Driver Descriptor
+/// Record ("ER") in block 0, then one 512-byte "PM" entry per block from block 1; entry 1
+/// gives the map's length. Disks with 2048-byte blocks (CDs) may space entries 2048 bytes
+/// apart, in which case starts and lengths count 2048-byte blocks.
+fn read_apm(disk: &mut dyn Disk) -> Result<Option<Vec<PartitionInfo>>> {
+    let ddr = read(disk, 0, 512)?;
+    let blk = u64::from(crate::hfs::be16(&ddr, 2));
+    let mut unit = 512u64;
+    let mut first = read(disk, 512, 512)?;
+    if &first[0..2] != b"PM" && blk == 2048 && disk.size() >= 4096 {
+        unit = 2048;
+        first = read(disk, 2048, 512)?;
+    }
+    if &first[0..2] != b"PM" {
+        return Ok(None);
+    }
+    let count = u64::from(be32(&first, 4)).clamp(1, 256);
+    let total = disk.size() / unit;
+    let mut parts = Vec::new();
+    for i in 1..=count {
+        if (i + 1) * unit > disk.size() {
+            break;
+        }
+        let e = read(disk, i * unit, 512)?;
+        if &e[0..2] != b"PM" {
+            break;
+        }
+        let type_id = apm_str(&e[48..80]);
+        let (start, sectors) = (u64::from(be32(&e, 8)), u64::from(be32(&e, 12)));
+        if matches!(
+            type_id.as_str(),
+            "Apple_Free" | "Apple_Void" | "Apple_Extra"
+        ) || sectors == 0
+            || start >= total
+        {
+            continue;
+        }
+        let sectors = sectors.min(total - start);
+        let fs = if type_id == "Apple_partition_map" || type_id.contains("Driver") {
+            None
+        } else {
+            probe_fs(disk, start * unit)?
+        };
+        parts.push(PartitionInfo {
+            index: i as usize,
+            scheme: "apm",
+            type_name: apm_type_name(&type_id),
+            type_id,
+            name: apm_str(&e[16..48]),
+            bootable: false,
+            start_lba: start,
+            sectors,
+            sector_size: unit as u32,
+            fs,
+            is_fat: fs == Some("FAT"),
+        });
+    }
+    Ok(Some(parts))
 }
 
 fn gpt_header_ok(h: &[u8]) -> bool {
@@ -403,6 +498,15 @@ pub(crate) fn new_partition_extent(
 ) -> Result<(u64, u64)> {
     let end = match scheme {
         PartitionScheme::None => return Ok((0, disk_sectors)),
+        // The map takes blocks 1-63; the volume starts at block 64, as Apple's tools did.
+        PartitionScheme::Apm if disk_sectors > APM_START + 64 => {
+            return Ok((APM_START, disk_sectors - APM_START));
+        }
+        PartitionScheme::Apm => {
+            return Err(Error::Invalid(
+                "disk is too small for a partition map".into(),
+            ));
+        }
         PartitionScheme::Mbr => disk_sectors,
         // Leave room for the backup entries and header.
         PartitionScheme::Gpt => disk_sectors.saturating_sub(1 + GPT_ENTRIES * GPT_ENTRY_SIZE / 512),
@@ -428,6 +532,51 @@ pub(crate) fn mbr_type_for(fat_bits: u8, sectors: u64) -> u8 {
         16 => 0x0E,
         _ => 0x0C,
     }
+}
+
+pub(crate) const APM_START: u64 = 64;
+/// GPT type of HFS / HFS+ partitions.
+pub(crate) const APPLE_HFS: &str = "48465300-0000-11AA-AA11-00306543ECAC";
+
+/// Write an Apple Partition Map: Driver Descriptor Record, the map's own entry (blocks
+/// 1-63) and one data partition.
+pub(crate) fn write_apm(
+    disk: &mut dyn Disk,
+    type_id: &str,
+    name: &str,
+    start: u64,
+    sectors: u64,
+) -> io::Result<()> {
+    let total = disk.size() / 512;
+    let mut ddr = vec![0u8; 512];
+    ddr[0..2].copy_from_slice(b"ER");
+    put_be16(&mut ddr, 2, 512);
+    put_be32(&mut ddr, 4, total.min(0xFFFF_FFFF) as u32);
+    disk.write_at(0, &ddr)?;
+    let entry = |kind: &str, label: &str, start: u64, count: u64| {
+        let mut e = vec![0u8; 512];
+        e[0..2].copy_from_slice(b"PM");
+        put_be32(&mut e, 4, 2);
+        put_be32(&mut e, 8, start as u32);
+        put_be32(&mut e, 12, count as u32);
+        let l = label.as_bytes();
+        e[16..16 + l.len().min(31)].copy_from_slice(&l[..l.len().min(31)]);
+        e[48..48 + kind.len()].copy_from_slice(kind.as_bytes());
+        put_be32(&mut e, 84, count as u32);
+        // Valid, allocated, in use, readable, writable.
+        put_be32(&mut e, 88, 0x37);
+        e
+    };
+    disk.write_at(
+        512,
+        &entry("Apple_partition_map", "Apple", 1, APM_START - 1),
+    )?;
+    disk.write_at(1024, &entry(type_id, name, start, sectors))?;
+    let zero = vec![0u8; 512];
+    for b in 3..APM_START {
+        disk.write_at(b * 512, &zero)?;
+    }
+    Ok(())
 }
 
 /// Write an MBR with one partition.

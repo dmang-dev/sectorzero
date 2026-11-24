@@ -362,5 +362,13 @@ window.SZ_LOCALES['ja'] = {
   "Exact capacity of the cartridge, laid out the way its maker formatted it for PCs.": "カートリッジの正確な容量で、メーカーが PC 用にフォーマットしたときと同じレイアウトです。",
   "Eject the medium (Zip, Jaz, SuperDisk, MO, CD)": "メディアを取り出します (Zip、Jaz、SuperDisk、MO、CD)",
   "Eject": "取り出し",
-  "Ejected {drive}": "{drive} を取り出しました"
+  "Ejected {drive}": "{drive} を取り出しました",
+  "How Macintosh resource forks and Finder information are copied in and out": "Macintosh のリソースフォークと Finder 情報の書き込み・取り出し方法",
+  "Mac forks": "Mac フォーク",
+  "Data fork only": "データフォークのみ",
+  "AppleDouble (._ files)": "AppleDouble（._ ファイル）",
+  "MacBinary": "MacBinary",
+  "Apple partition map": "Apple パーティションマップ",
+  "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS（Mac OS 標準：フロッピー、Zip などのカートリッジ）",
+  "HFS+ (Mac OS Extended)": "HFS+（Mac OS 拡張）"
 };

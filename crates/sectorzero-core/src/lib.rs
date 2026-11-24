@@ -16,6 +16,7 @@ mod exfat;
 mod ext;
 mod fatraw;
 mod format;
+mod hfs;
 mod image;
 mod iso;
 mod iso_build;
@@ -46,8 +47,8 @@ pub use iso_build::{BootPlatform, IsoBuildOptions, IsoBuildReport, build_iso};
 pub use listing::{ListingFormat, render_listing};
 pub use partition::{Layout, PartitionInfo, PartitionScheme};
 pub use volume::{
-    Attributes, CreateOptions, DiskResize, Entry, FsKind, PartitionResize, Stats, Volume,
-    VolumeInfo,
+    Attributes, CreateOptions, DiskResize, Entry, ForkMode, FsKind, MacInfo, PartitionResize,
+    Stats, Volume, VolumeInfo,
 };
 
 /// Inspect an image's container and layout without mounting anything.

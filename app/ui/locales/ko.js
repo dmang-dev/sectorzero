@@ -362,5 +362,13 @@ window.SZ_LOCALES['ko'] = {
   "Exact capacity of the cartridge, laid out the way its maker formatted it for PCs.": "카트리지의 정확한 용량이며, 제조사가 PC용으로 포맷한 방식과 같은 배치입니다.",
   "Eject the medium (Zip, Jaz, SuperDisk, MO, CD)": "미디어 꺼내기 (Zip, Jaz, SuperDisk, MO, CD)",
   "Eject": "꺼내기",
-  "Ejected {drive}": "{drive}을(를) 꺼냈습니다"
+  "Ejected {drive}": "{drive}을(를) 꺼냈습니다",
+  "How Macintosh resource forks and Finder information are copied in and out": "Macintosh 리소스 포크와 Finder 정보를 넣고 꺼내는 방식",
+  "Mac forks": "Mac 포크",
+  "Data fork only": "데이터 포크만",
+  "AppleDouble (._ files)": "AppleDouble(._ 파일)",
+  "MacBinary": "MacBinary",
+  "Apple partition map": "Apple 파티션 맵",
+  "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS(Mac OS 표준: 플로피, Zip 및 기타 카트리지)",
+  "HFS+ (Mac OS Extended)": "HFS+(Mac OS 확장)"
 };

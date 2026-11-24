@@ -11,10 +11,10 @@ use std::sync::Mutex;
 use sectorzero_core::{
     BootPlatform, BootSectorEdit, BootSectorInfo, Checksums, ContainerKind, ConvertReport,
     CreateOptions, DefragReport, DriveInfo, DriveWriteOptions, DriveWriteReport, Entry, EntryEdit,
-    Error, FLOPPY_FORMATS, FloppyFormat, FsKind, Geometry, Image, IsoBuildOptions, IsoBuildReport,
-    ListingFormat, NewImage, OpenOptions, PartitionScheme, Stats, TruncateReport, Volume,
-    VolumeInfo, build_iso, checksum_file, convert, convert_with_progress, create_differencing,
-    list_drives, render_listing, truncate_image, write_image_to_drive,
+    Error, FLOPPY_FORMATS, FloppyFormat, ForkMode, FsKind, Geometry, Image, IsoBuildOptions,
+    IsoBuildReport, ListingFormat, NewImage, OpenOptions, PartitionScheme, Stats, TruncateReport,
+    Volume, VolumeInfo, build_iso, checksum_file, convert, convert_with_progress,
+    create_differencing, list_drives, render_listing, truncate_image, write_image_to_drive,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
@@ -233,6 +233,7 @@ fn new_image(spec: NewSpec, state: State<AppState>) -> CmdResult<Opened> {
         scheme: match spec.scheme.as_deref() {
             Some("mbr") => PartitionScheme::Mbr,
             Some("gpt") => PartitionScheme::Gpt,
+            Some("apm") => PartitionScheme::Apm,
             _ => PartitionScheme::None,
         },
         dynamic: spec.dynamic,
@@ -269,12 +270,17 @@ fn inject(
     paths: Vec<String>,
     dest: String,
     overwrite: bool,
+    forks: Option<String>,
     state: State<AppState>,
 ) -> CmdResult<Stats> {
+    let forks = fork_mode(forks.as_deref())?;
     let vol = open_current(&state, true)?;
     let mut total = Stats::default();
     for p in &paths {
-        add(&mut total, vol.inject(Path::new(p), &dest, overwrite)?);
+        add(
+            &mut total,
+            vol.inject_with(Path::new(p), &dest, overwrite, forks)?,
+        );
     }
     vol.close()?;
     Ok(total)
@@ -286,8 +292,10 @@ fn extract(
     paths: Vec<String>,
     dest: String,
     overwrite: bool,
+    forks: Option<String>,
     state: State<AppState>,
 ) -> CmdResult<Stats> {
+    let forks = fork_mode(forks.as_deref())?;
     let vol = open_current(&state, false)?;
     let paths = if paths.is_empty() {
         vec![String::new()]
@@ -296,9 +304,18 @@ fn extract(
     };
     let mut total = Stats::default();
     for p in &paths {
-        add(&mut total, vol.extract(p, Path::new(&dest), overwrite)?);
+        add(
+            &mut total,
+            vol.extract_with(p, Path::new(&dest), overwrite, forks)?,
+        );
     }
     Ok(total)
+}
+
+/// "data" (default), "appledouble" or "macbinary".
+fn fork_mode(s: Option<&str>) -> std::result::Result<ForkMode, Error> {
+    ForkMode::parse(s.unwrap_or("data"))
+        .ok_or_else(|| Error::Invalid(format!("unknown fork mode {s:?}")))
 }
 
 /// The UI confirms before calling, so folders are removed with their contents.

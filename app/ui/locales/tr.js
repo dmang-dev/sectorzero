@@ -362,5 +362,13 @@ window.SZ_LOCALES['tr'] = {
   "Exact capacity of the cartridge, laid out the way its maker formatted it for PCs.": "Kartuşun tam kapasitesi; üreticisinin PC için biçimlendirdiği düzende.",
   "Eject the medium (Zip, Jaz, SuperDisk, MO, CD)": "Ortamı çıkar (Zip, Jaz, SuperDisk, MO, CD)",
   "Eject": "Çıkar",
-  "Ejected {drive}": "{drive} çıkarıldı"
+  "Ejected {drive}": "{drive} çıkarıldı",
+  "How Macintosh resource forks and Finder information are copied in and out": "Macintosh kaynak çatallarının ve Finder bilgilerinin içeri ve dışarı nasıl kopyalandığı",
+  "Mac forks": "Mac çatalları",
+  "Data fork only": "Yalnızca veri çatalı",
+  "AppleDouble (._ files)": "AppleDouble (._ dosyaları)",
+  "MacBinary": "MacBinary",
+  "Apple partition map": "Apple bölüm haritası",
+  "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standart: disketler, Zip ve diğer kartuşlar)",
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Genişletilmiş)"
 };

@@ -501,6 +501,7 @@ fn item_entry(it: &Item, dir: &str) -> Entry {
             system: it.attrs & A_SYSTEM != 0,
             archive: it.attrs & A_ARCHIVE != 0,
         },
+        mac: None,
     }
 }
 

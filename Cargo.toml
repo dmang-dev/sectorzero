@@ -32,6 +32,8 @@ adler2 = "2"
 ntfs = "0.4"
 # Random GUIDs for GPT, VHD, VHDX.
 uuid = { version = "1.29", features = ["v4"] }
+# NFC/NFD for HFS+ names (MIT OR Apache-2.0).
+unicode-normalization = "0.1"
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

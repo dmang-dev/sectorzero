@@ -362,5 +362,13 @@ window.SZ_LOCALES['cs'] = {
   "Exact capacity of the cartridge, laid out the way its maker formatted it for PCs.": "Přesná kapacita kazety, rozvržená tak, jak ji výrobce formátoval pro PC.",
   "Eject the medium (Zip, Jaz, SuperDisk, MO, CD)": "Vysunout médium (Zip, Jaz, SuperDisk, MO, CD)",
   "Eject": "Vysunout",
-  "Ejected {drive}": "{drive} vysunuto"
+  "Ejected {drive}": "{drive} vysunuto",
+  "How Macintosh resource forks and Finder information are copied in and out": "Jak se kopírují větve prostředků Macintoshe a informace Finderu dovnitř a ven",
+  "Mac forks": "Větve Mac",
+  "Data fork only": "Jen datová větev",
+  "AppleDouble (._ files)": "AppleDouble (soubory ._)",
+  "MacBinary": "MacBinary",
+  "Apple partition map": "Mapa oddílů Apple",
+  "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standard: diskety, Zip a další kazety)",
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)"
 };
