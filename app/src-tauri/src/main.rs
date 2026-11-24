@@ -10,9 +10,9 @@ use std::sync::Mutex;
 
 use sectorzero_core::{
     BootPlatform, BootSectorEdit, BootSectorInfo, Checksums, ContainerKind, ConvertReport,
-    CreateOptions, DefragReport, Entry, EntryEdit, Error, FLOPPY_FORMATS, FloppyFormat, Geometry,
-    Image, IsoBuildOptions, IsoBuildReport, ListingFormat, NewImage, OpenOptions, PartitionScheme,
-    Stats, TruncateReport, Volume, VolumeInfo, build_iso, checksum_file, convert,
+    CreateOptions, DefragReport, Entry, EntryEdit, Error, FLOPPY_FORMATS, FloppyFormat, FsKind,
+    Geometry, Image, IsoBuildOptions, IsoBuildReport, ListingFormat, NewImage, OpenOptions,
+    PartitionScheme, Stats, TruncateReport, Volume, VolumeInfo, build_iso, checksum_file, convert,
     create_differencing, render_listing, truncate_image,
 };
 use serde::{Deserialize, Serialize};
@@ -203,6 +203,9 @@ struct NewSpec {
     label: Option<String>,
     /// "none", "mbr" or "gpt".
     scheme: Option<String>,
+    /// "fat" (default), "ext2" or "ext3".
+    #[serde(default)]
+    fs: Option<String>,
     container: Option<String>,
     dynamic: bool,
     /// Custom layout; overrides `format` and `size_mb`.
@@ -216,6 +219,8 @@ fn new_image(spec: NewSpec, state: State<AppState>) -> CmdResult<Opened> {
     let path = PathBuf::from(&spec.path);
     let opts = CreateOptions {
         label: spec.label.filter(|l| !l.trim().is_empty()),
+        fs: FsKind::parse(spec.fs.as_deref().unwrap_or("fat"))
+            .ok_or_else(|| Error::Invalid(format!("unknown file system {:?}", spec.fs)))?,
         container: container_of(spec.container.as_deref())?,
         scheme: match spec.scheme.as_deref() {
             Some("mbr") => PartitionScheme::Mbr,

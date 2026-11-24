@@ -128,9 +128,9 @@ impl Image {
     fn require_fat(&self) -> Result<()> {
         let fs = match (&self.layout, &self.partition) {
             (Layout::BareVolume, _) => {
-                let mut s = [0u8; 512];
-                lock(&self.disk)?.read_at(0, &mut s)?;
-                partition::looks_like_fat_boot_sector(&s).then_some("FAT")
+                let mut s = vec![0u8; 2048];
+                self.window().read_at(0, &mut s)?;
+                partition::fs_of(&s)
             }
             (Layout::Iso, _) => Some("ISO 9660"),
             (_, Some(p)) => p.fs,
@@ -156,8 +156,22 @@ impl Image {
     // --- volume label and boot sector -------------------------------------------------
 
     /// Set or (with `None` / empty) remove the FAT volume label.
+    /// Whether the selected volume holds ext2/3/4.
+    fn is_ext(&self) -> Result<bool> {
+        if matches!(self.layout, Layout::Iso) {
+            return Ok(false);
+        }
+        let mut head = vec![0u8; 2048];
+        self.window().read_at(0, &mut head)?;
+        Ok(partition::fs_of(&head).is_some_and(|f| f.starts_with("ext")))
+    }
+
     pub fn set_label(&self, label: Option<&str>) -> Result<()> {
         self.require_writable()?;
+        if self.is_ext()? {
+            crate::ext::set_label(&mut self.window(), label)?;
+            return self.flush();
+        }
         self.require_fat()?;
         let label = match label.map(str::trim).filter(|l| !l.is_empty()) {
             Some(l) => Some(crate::volume::encode_label(l)?),
@@ -221,10 +235,19 @@ impl Image {
 
     /// Change attributes and timestamps of a file or folder (with `recursive`, of everything
     /// below it too). Returns how many entries changed.
+    /// Change attributes and times (see [`EntryEdit`]). FAT and ext: on ext, read-only is
+    /// the absence of write permission bits, and hidden / system / archive do not exist.
     pub fn edit_entry(&self, path: &str, edit: &EntryEdit, recursive: bool) -> Result<u64> {
         self.require_writable()?;
-        self.require_fat()?;
         let path = crate::volume::norm(path)?;
+        if self.is_ext()? {
+            let fs = crate::ext::ExtFs::open(self.window(), true)?;
+            let n = fs.edit(&path, edit, recursive)?;
+            drop(fs);
+            self.flush()?;
+            return Ok(n);
+        }
+        self.require_fat()?;
         let n = fatraw::edit_entries(&mut self.window(), &path, edit, recursive)?;
         self.flush()?;
         Ok(n)

@@ -10,12 +10,14 @@
 mod checksum;
 mod container;
 mod error;
+mod ext;
 mod fatraw;
 mod format;
 mod image;
 mod iso;
 mod iso_build;
 mod listing;
+mod ntfsfs;
 mod partition;
 mod util;
 mod volume;
@@ -31,7 +33,7 @@ pub use iso::{BootEntry, IsoInfo};
 pub use iso_build::{BootPlatform, IsoBuildOptions, IsoBuildReport, build_iso};
 pub use listing::{ListingFormat, render_listing};
 pub use partition::{Layout, PartitionInfo, PartitionScheme};
-pub use volume::{Attributes, CreateOptions, Entry, Stats, Volume, VolumeInfo};
+pub use volume::{Attributes, CreateOptions, Entry, FsKind, Stats, Volume, VolumeInfo};
 
 /// Inspect an image's container and layout without mounting anything.
 pub fn probe(path: &std::path::Path) -> Result<(ContainerInfo, Layout)> {

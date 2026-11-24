@@ -110,20 +110,29 @@ pub(crate) fn lock(
         .map_err(|_| io::Error::other("image state is poisoned after an earlier failure"))
 }
 
+/// Fills the whole buffer (up to the end of the volume) rather than stopping at a cache
+/// boundary: some readers (the NTFS crate) treat a short read as the end of the data.
 impl Read for Window {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.pos >= self.len || buf.is_empty() {
-            return Ok(0);
+        let want = (buf.len() as u64).min(self.len.saturating_sub(self.pos)) as usize;
+        let mut done = 0;
+        if want > CACHE_BYTES {
+            self.read_at(self.pos, &mut buf[..want])?;
+            self.pos += want as u64;
+            return Ok(want);
         }
-        let cache_end = self.cache_start + self.cache_len as u64;
-        if self.pos < self.cache_start || self.pos >= cache_end {
-            self.fill_cache(self.pos)?;
+        while done < want {
+            let cache_end = self.cache_start + self.cache_len as u64;
+            if self.pos < self.cache_start || self.pos >= cache_end {
+                self.fill_cache(self.pos)?;
+            }
+            let offset = (self.pos - self.cache_start) as usize;
+            let n = (want - done).min(self.cache_len - offset);
+            buf[done..done + n].copy_from_slice(&self.cache[offset..offset + n]);
+            self.pos += n as u64;
+            done += n;
         }
-        let offset = (self.pos - self.cache_start) as usize;
-        let n = buf.len().min(self.cache_len - offset);
-        buf[..n].copy_from_slice(&self.cache[offset..offset + n]);
-        self.pos += n as u64;
-        Ok(n)
+        Ok(done)
     }
 }
 

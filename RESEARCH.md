@@ -217,7 +217,28 @@ published format descriptions and have not been tried on files made by Nero or A
 On Linux, block devices open as raw images; this was tested in an Alpine guest under QEMU with a
 virtual floppy (`/dev/fd0`) and USB stick (`/dev/sda`).
 
+Linux and Windows file systems (2026-11-23): ext2, ext3 and ext4 read/write and create
+(`ext.rs`, written from the kernel's ext4 on-disk documentation); NTFS read-only through the
+`ntfs` crate. ext3/ext4 journals are handled like an offline tool handles them: writes only
+when the journal is clean, and it is left clean. ext4 writing covers mke2fs's default feature
+set: new files get minimal-depth extent trees, 64-bit descriptors, flex_bg, uninitialized
+block/inode groups (the bitmap of a BLOCK_UNINIT group is rebuilt from the layout and checked
+against its free count), and crc32c metadata checksums on the superblock, descriptors,
+bitmaps, inodes, extent blocks, directory blocks and shared xattr blocks (crc16 descriptor
+checksums for uninit_bg). A hashed (dir_index) folder that gets modified becomes a linear one
+(with metadata_csum, its index blocks are rewritten as empty, checksummed leaves), which Linux
+and e2fsck accept. Inline data, encryption, bigalloc, quotas, casefolding, meta_bg and
+verity stay read-only. The Properties dialog edits ext read-only (the write permission bits)
+and modified/accessed/created times. The tests run a built-in consistency check
+(`Volume::ext_check`: checksums, bitmaps against inode usage, free counts, link counts) after
+every change, on s0's own volumes and on a mkfs.ext4 image. NTFS writing means
+MFT record allocation, $Bitmap, index B+tree inserts and splits, and leaving $LogFile clean;
+ntfs-3g is GPL, so it would be written from the format documentation. Cross-checked in an
+Alpine guest under QEMU (e2fsprogs from the ISO): `e2fsck -fn` passes on SectorZero's
+ext2/ext3/ext4 images and on mke2fs ext2/ext3/ext4 images after SectorZero writes to them, and
+the kernel sees SectorZero's file contents, renames, deletions and attribute/time changes.
+
 Still to do, roughly in order: physical drives on Windows (read an image from a USB stick or card,
-write one back, with verification), physical floppy drives on Windows, batch mode, NTFS and
-ext2/3/4, exFAT, resizing partitioned disks, converting a boot floppy into a bootable hard disk
-image, encrypted IMZ (proprietary), and the macOS and Android builds.
+write one back, with verification), physical floppy drives on Windows, batch mode, NTFS
+writing, exFAT, resizing partitioned disks, converting a boot floppy into a
+bootable hard disk image, encrypted IMZ (proprietary), and the macOS and Android builds.

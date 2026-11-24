@@ -77,9 +77,9 @@ function statusForImage() {
   const part = i.partition ? `, partition ${i.partition.index}` : '';
   const ro = i.fs_writable ? '' : ' (read-only)';
   setStatus(`${state.image.name} — ${what}${part}${i.label ? ` — ${i.label}` : ''}${ro}`);
-  $('statusRight').textContent = i.fs_writable
-    ? `${human(i.free_bytes)} free of ${human(i.total_bytes)}`
-    : human(i.total_bytes);
+  $('statusRight').textContent = i.iso
+    ? human(i.total_bytes)
+    : `${human(i.free_bytes)} free of ${human(i.total_bytes)}`;
 }
 
 async function showError(e) {
@@ -288,6 +288,11 @@ function syncNewDialog() {
   const kind = document.querySelector('input[name="newKind"]:checked').value;
   document.querySelectorAll('#newDlg [data-kind]').forEach((el) => { el.hidden = el.dataset.kind !== kind; });
   geoEnable($('newGeo'), kind === 'custom');
+  // Custom layouts are FAT boot sector parameters.
+  $('newFsWrap').hidden = kind === 'custom';
+  const ext = kind !== 'custom' && $('newFs').value !== 'fat';
+  $('newLabel').maxLength = ext ? 16 : 11;
+  $('newLabelText').textContent = `Volume label (optional, up to ${ext ? 16 : 11} characters)`;
   const c = $('newContainer').value;
   $('newDynamic').disabled = !DYNAMIC.includes(c);
 }
@@ -310,6 +315,7 @@ async function actionNew() {
     size_mb: kind === 'disk' ? Number($('newSize').value) : null,
     label: $('newLabel').value || null,
     scheme: kind === 'disk' ? $('newScheme').value : 'none',
+    fs: kind === 'custom' ? 'fat' : $('newFs').value,
     container,
     dynamic: !$('newDynamic').disabled && $('newDynamic').checked,
     geometry,
@@ -589,6 +595,7 @@ async function actionInfo() {
     ['Layout', layoutName(i)],
     ['File system', i.fs_type + (i.fs_writable ? '' : ' (read-only)')],
   ];
+  if (i.read_only_reason) rows.push(['Read-only because', i.read_only_reason]);
   if (c.comment) rows.push(['Comment', c.comment]);
   if (c.parent) rows.push(['Parent', c.parent]);
   if (i.iso) {
@@ -602,8 +609,8 @@ async function actionInfo() {
     rows.push(
       ['Format', i.floppy_format || '—'],
       ['Label', i.label || '(none)'],
-      ['Serial number', i.volume_id],
-      ['OEM name', i.oem_name],
+      [i.fs_type.startsWith('ext') ? 'UUID' : 'Serial number', i.volume_id],
+      ['OEM name', i.oem_name || '—'],
       ['Sector size', `${i.bytes_per_sector} bytes`],
       ['Cluster size', `${fmtBytes(i.cluster_size)} bytes`],
       ['Capacity', `${fmtBytes(i.total_bytes)} bytes (${fmtBytes(i.total_clusters)} clusters)`],
@@ -620,9 +627,56 @@ async function actionInfo() {
 const selectedEntries = () => state.entries.filter((e) => state.selected.has(e.path));
 const toLocalInput = (s) => (s ? s.replace(' ', 'T') : '');
 
+// What the Properties dialog can change: FAT has four attributes and three times
+// (2-second modified steps, date-only access, 1980-2107); ext has read-only (the write
+// permission bits) and full times; anything else (NTFS, ISO, read-only images) is shown only.
+function propsMode() {
+  const fs = state.image.info.fs_type || '';
+  const kind = fs.startsWith('FAT') ? 'fat' : fs.startsWith('ext') ? 'ext' : 'other';
+  return { kind, editable: writable() && kind !== 'other' };
+}
+
+function setupPropsDialog(mode, items) {
+  const ext = mode.kind === 'ext';
+  const fat = mode.kind === 'fat';
+  for (const box of document.querySelectorAll('#propsAttrs input')) {
+    const k = box.dataset.attr;
+    box.disabled = !mode.editable || (ext && k !== 'read_only');
+    box.parentElement.title = ext && k !== 'read_only'
+      ? (k === 'hidden' ? 'Names starting with a dot are hidden on Linux' : 'ext has no such attribute')
+      : '';
+  }
+  const range = fat ? ['1980-01-01', '2107-12-31'] : ['1902-01-01', '2446-12-31'];
+  for (const id of ['propsModified', 'propsCreated', 'propsAccessed']) {
+    const el = $(id);
+    el.disabled = !mode.editable;
+    if (id === 'propsAccessed') {
+      const withTime = !fat && items.some((e) => e.accessed.includes(' '));
+      el.type = fat || (!ext && !withTime) ? 'date' : 'datetime-local';
+      $('propsAccessedText').textContent = el.type === 'date' ? 'Accessed (date only)' : 'Accessed';
+    }
+    const time = el.type === 'datetime-local';
+    el.min = range[0] + (time ? 'T00:00' : '');
+    el.max = range[1] + (time ? 'T23:59' : '');
+    if (time) el.step = fat && id === 'propsModified' ? '2' : '1';
+  }
+  $('propsRecursive').disabled = !mode.editable;
+  $('propsApply').hidden = !mode.editable;
+  $('propsCancel').textContent = mode.editable ? 'Cancel' : 'Close';
+  $('propsNote').textContent = !mode.editable
+    ? (writable() || mode.kind === 'other'
+      ? `${state.image.info.fs_type} volumes are read-only here; the values are shown for reference.`
+      : 'The image is open read-only; the values are shown for reference.')
+    : ext
+      ? 'Only the fields you change are written. On ext, read-only removes the write permission bits (clearing it gives the owner write permission back); hidden, system and archive do not exist.'
+      : 'Only the fields you change are written. FAT stores modified times in 2-second steps.';
+}
+
 async function actionProps() {
   const items = selectedEntries();
   if (!items.length) return;
+  const mode = propsMode();
+  setupPropsDialog(mode, items);
   const one = items.length === 1 ? items[0] : null;
   $('propsTitle').textContent = one ? `Properties of ${one.name}` : `Properties of ${items.length} items`;
   $('propsHint').textContent = one
@@ -646,7 +700,7 @@ async function actionProps() {
   $('propsRecursiveWrap').hidden = !anyDir;
   $('propsRecursive').checked = false;
   $('propsRecursive').onchange = () => touched.add('recursive');
-  if (await showDialog($('propsDlg')) !== 'ok') return;
+  if (await showDialog($('propsDlg')) !== 'ok' || !mode.editable) return;
   const edit = {};
   for (const box of document.querySelectorAll('#propsAttrs input')) {
     if (touched.has(box.dataset.attr)) edit[box.dataset.attr] = box.checked;
@@ -782,7 +836,7 @@ function updateButtons() {
   for (const id of ['btnNew', 'btnOpen', 'btnIso']) $(id).disabled = state.busy;
   const iso = has && state.image.info.iso;
   $('btnBootImage').hidden = !iso;
-  for (const id of ['btnLabel', 'btnBoot', 'btnDefrag', 'btnFormat', 'btnProps']) $(id).hidden = !!iso;
+  for (const id of ['btnLabel', 'btnBoot', 'btnDefrag', 'btnFormat']) $(id).hidden = !!iso;
   $('btnFormat').disabled ||= !has || state.image.info.layout.kind !== 'BareVolume';
   const sel = selectedEntries();
   $('mnuIsoReplace').hidden = !iso;
@@ -966,6 +1020,7 @@ document.addEventListener('mouseup', () => { drag.start = null; });
 $('partSel').onchange = () => run(() => openImage(state.image.path, Number($('partSel').value)));
 document.querySelectorAll('input[name="newKind"]').forEach((r) => { r.onchange = syncNewDialog; });
 $('newContainer').onchange = syncNewDialog;
+$('newFs').onchange = syncNewDialog;
 
 document.addEventListener('keydown', (ev) => {
   if (document.querySelector('dialog[open]')) return;
@@ -981,7 +1036,7 @@ document.addEventListener('keydown', (ev) => {
   else if (k === 'Insert' && writable()) run(actionInject);
   else if (k === 'F2' && writable()) run(actionRename);
   else if (k === 'Backspace' && state.dir) run(() => enter(parent(state.dir)));
-  else if (k === 'Enter' && ev.altKey && state.selected.size && writable()) run(actionProps);
+  else if (k === 'Enter' && ev.altKey && state.selected.size) run(actionProps);
   else if (k === 'Enter' && state.selected.size === 1) {
     const e = state.entries.find((x) => state.selected.has(x.path));
     if (e) run(() => (e.is_dir ? enter(e.path) : openEntry(e)));

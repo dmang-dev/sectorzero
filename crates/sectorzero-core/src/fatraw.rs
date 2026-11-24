@@ -414,8 +414,9 @@ pub(crate) fn used_end(w: &mut Window) -> Result<u64> {
 
 // --- file attributes and dates --------------------------------------------------------
 
-/// Changes to a file's or folder's attributes and timestamps (WinImage's file properties).
-/// `None` leaves a field unchanged. Times are local, as FAT stores them.
+/// Changes to a file's or folder's attributes and timestamps (the Properties dialog).
+/// `None` leaves a field unchanged. Times are local. On ext, read-only maps to the write
+/// permission bits and hidden / system / archive do not apply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EntryEdit {
     pub read_only: Option<bool>,
@@ -425,7 +426,7 @@ pub struct EntryEdit {
     /// `YYYY-MM-DD`, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS`.
     pub modified: Option<String>,
     pub created: Option<String>,
-    /// FAT keeps only the date of the last access.
+    /// FAT keeps only the date of the last access; ext keeps the time too.
     pub accessed: Option<String>,
 }
 
