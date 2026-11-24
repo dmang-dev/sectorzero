@@ -315,7 +315,37 @@ accepts on any SCSI disk, or FDEJECT). Checked in the Alpine guest on QEMU remov
 checksum, and the Zip drive has no medium after `s0 eject`. Real cartridges have not been tried.
 Mac-formatted cartridges (Apple Partition Map, HFS/HFS+) are phase 2.
 
-Still to do, roughly in order: Apple Partition Map and HFS/HFS+ (Mac-formatted Zip, Jaz and
-SyQuest cartridges), low-level formatting of physical floppies, batch mode, NTFS
+Mac-formatted media (2026-11-24, phase 2). Written from Apple's documentation only (Inside
+Macintosh: Files for HFS, Inside Macintosh: Devices for the partition map, TN1150 for HFS+); no
+hfsutils, Linux or xnu code was consulted. The Apple Partition Map is read and written (Driver
+Descriptor Record, the map's own entry, then the volume from block 64 as Apple's tools left
+it). HFS and HFS+/HFSX are read through the catalog B-tree, forks through the extents overflow
+tree, hard links through their iNode files; names are Mac Roman or UTF-16 (decomposed on disk,
+shown composed). Writing loads the catalog and extents trees into memory, edits them and writes
+each tree back packed, with new data in newly allocated blocks and the bitmap and both volume
+headers last; blocks freed by a change are reused only when space would otherwise run out.
+New files get thread records and no BSD permissions, as Mac OS 9 made them. Journaled HFS+ and
+HFS+ inside an HFS wrapper stay read-only. Resource forks and Finder information go in and out
+as AppleDouble (`._name`, entries 2 and 9) or MacBinary II/III (MacBinary dates are local time).
+`s0`'s internal consistency check (`hfs_check`: bitmap against every extent, unique CNIDs,
+threads, valences, header counts, the next CNID, orphan overflow extents) runs after every write
+in the tests.
+
+Checked in the Alpine guest (`sz-vm/hfswrite.py`, two boots, 62 checks): HFS and HFS+ on a bare
+1440 KB floppy and on a Zip 100 with an Apple partition map. The kernel mounts SectorZero's
+volumes, matches every md5 and name, writes on top and remounts cleanly with nothing in dmesg;
+SectorZero then reads the kernel's files and writes a second round, which the kernel checks
+again. What the Linux drivers do differently, found on the way (`sz-vm/hfscnid.py`): the hfs
+driver stores the last CNID it gave out in drNxtCNID rather than the next free one (Apple's
+definition), so a writer that trusts the header reuses an ID; SectorZero takes the larger of
+the header and the highest ID in use plus one. The hfs driver does not update drNmFls when a
+file moves into or out of the root; SectorZero recomputes every count when it writes. Linux
+cannot open resource forks by path (`file/rsrc` and `..namedfork/rsrc` give ENOTDIR), so forks
+were verified by SectorZero after the kernel's writes. hfsplus ignores the Finder locked flag
+(it only maps the immutable flag), and hfs shows locked files as mode 444. blkid recognises
+none of these volumes in the guest. Not tried yet: real Macs, Mac OS 9 or macOS reading the
+images, and Mac-made cartridge images.
+
+Still to do, roughly in order: low-level formatting of physical floppies, batch mode, NTFS
 writing, resizing ext/exFAT/NTFS partitions, converting a boot floppy into a
 bootable hard disk image, encrypted IMZ (proprietary), and the macOS and Android builds.

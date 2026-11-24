@@ -81,6 +81,7 @@ impl Found {
                 system: a.contains(NtfsFileAttributeFlags::SYSTEM),
                 archive: a.contains(NtfsFileAttributeFlags::ARCHIVE),
             },
+            mac: None,
             name: self.name.clone(),
         }
     }

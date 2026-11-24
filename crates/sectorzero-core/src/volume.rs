@@ -19,6 +19,7 @@ use crate::exfat::ExFatFs;
 use crate::ext::{ExtFormat, ExtFs};
 use crate::fatraw;
 use crate::format::{FloppyFormat, MediaFormat, MediaLayout, NewImage};
+use crate::hfs::{HfsFs, Kind as HfsKind};
 use crate::image::{Image, OpenOptions};
 use crate::iso::{IsoFs, IsoInfo};
 use crate::ntfsfs::NtfsFs;
@@ -69,6 +70,47 @@ pub struct Entry {
     /// `YYYY-MM-DD` (FAT keeps only the date), or empty.
     pub accessed: String,
     pub attributes: Attributes,
+    /// Macintosh file information (HFS / HFS+ files only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mac: Option<MacInfo>,
+}
+
+/// Finder information of a Macintosh file.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MacInfo {
+    /// Four-character file type, e.g. `TEXT`, `APPL`.
+    pub file_type: String,
+    /// Four-character creator code, e.g. `ttxt`.
+    pub creator: String,
+    /// Size of the resource fork in bytes.
+    pub resource_size: u64,
+}
+
+/// What to do with Macintosh resource forks and Finder information when extracting from
+/// HFS / HFS+ (other file systems have neither and ignore this).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForkMode {
+    /// The data fork only.
+    #[default]
+    Data,
+    /// The data fork, plus a `._name` AppleDouble file holding the resource fork and
+    /// Finder information when there is any (what macOS writes on non-Mac disks).
+    AppleDouble,
+    /// One MacBinary III `name.bin` file per file, holding both forks and the Finder
+    /// information (what Mac emulators and archives use).
+    MacBinary,
+}
+
+impl ForkMode {
+    pub fn parse(s: &str) -> Option<ForkMode> {
+        match s.to_ascii_lowercase().as_str() {
+            "data" | "" => Some(ForkMode::Data),
+            "appledouble" | "double" => Some(ForkMode::AppleDouble),
+            "macbinary" | "bin" => Some(ForkMode::MacBinary),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -125,6 +167,12 @@ pub enum FsKind {
     Ext4,
     /// exFAT (from 1 MiB; MBR type 0x07 / GPT basic data when partitioned).
     Exfat,
+    /// HFS, Mac OS Standard (from 400 KB; Apple_HFS in an Apple partition map, MBR type
+    /// 0xAF, GPT Apple HFS).
+    Hfs,
+    /// An empty HFS+ volume (SectorZero reads HFS+ but does not write to it yet).
+    #[doc(hidden)]
+    HfsPlus,
 }
 
 impl FsKind {
@@ -135,6 +183,8 @@ impl FsKind {
             "ext3" => Some(FsKind::Ext3),
             "ext4" => Some(FsKind::Ext4),
             "exfat" => Some(FsKind::Exfat),
+            "hfs" => Some(FsKind::Hfs),
+            "hfs+" | "hfsplus" => Some(FsKind::HfsPlus),
             _ => None,
         }
     }
@@ -160,6 +210,7 @@ enum Fs {
     Ext(Box<ExtFs>),
     Exfat(Box<ExFatFs>),
     Ntfs(Box<NtfsFs>),
+    Hfs(Box<HfsFs>),
 }
 
 /// Result of [`Volume::resize_disk`].
@@ -196,6 +247,25 @@ pub struct Volume {
     _sync: SyncOnDrop,
     image: Image,
     boot: [u8; 512],
+}
+
+/// The partition table around a new HFS volume.
+fn write_hfs_table(
+    d: &mut dyn container::Disk,
+    scheme: PartitionScheme,
+    label: &str,
+    start: u64,
+    sectors: u64,
+) -> Result<()> {
+    match scheme {
+        PartitionScheme::Apm => partition::write_apm(d, "Apple_HFS", label, start, sectors)?,
+        PartitionScheme::Mbr => partition::write_mbr(d, 0xAF, start, sectors)?,
+        PartitionScheme::Gpt => {
+            partition::write_gpt(d, partition::APPLE_HFS, label, start, sectors)?
+        }
+        PartitionScheme::None => {}
+    }
+    Ok(())
 }
 
 /// Format a FAT file system into `w`. `hidden` is the partition's first LBA.
@@ -327,9 +397,10 @@ impl Volume {
             Some("ext2" | "ext3" | "ext4") => Fs::Ext(Box::new(ExtFs::open(w, image.writable)?)),
             Some("exFAT") => Fs::Exfat(Box::new(ExFatFs::open(w, image.writable)?)),
             Some("NTFS") => Fs::Ntfs(Box::new(NtfsFs::open(w)?)),
+            Some("HFS" | "HFS+" | "HFSX") => Fs::Hfs(Box::new(HfsFs::open(w)?)),
             Some(other) => {
                 return Err(Error::Unsupported(format!(
-                    "{other} volumes (FAT, exFAT, ext2/3/4, NTFS and ISO 9660 are readable)"
+                    "{other} volumes (FAT, exFAT, ext2/3/4, NTFS, HFS, HFS+ and ISO 9660 are readable)"
                 )));
             }
             None => {
@@ -366,8 +437,11 @@ impl Volume {
                 m.name
             )));
         }
+        let hfs = matches!(opts.fs, FsKind::Hfs | FsKind::HfsPlus);
         let (start, slot) = match m.layout {
             MediaLayout::Superfloppy => (0, 0),
+            // Mac-formatted cartridges carry an Apple partition map instead.
+            MediaLayout::Mbr { .. } if hfs => (partition::APM_START, 0),
             MediaLayout::Mbr { slot, start } => (u64::from(start), slot),
         };
         let sectors = m.total_sectors - start;
@@ -387,6 +461,20 @@ impl Volume {
         )?);
         let result = (|| -> Result<()> {
             let w = Window::new(disk.clone(), start * ss, sectors * ss, true);
+            if hfs {
+                let label = opts.label.clone().unwrap_or_else(|| "Untitled".into());
+                if opts.fs == FsKind::Hfs {
+                    crate::hfs::format_hfs(w, &label)?;
+                } else {
+                    crate::hfs::format_hfsplus(w, &label)?;
+                }
+                let mut d = lock(&disk)?;
+                if start != 0 {
+                    write_hfs_table(d.as_mut(), PartitionScheme::Apm, &label, start, sectors)?;
+                }
+                d.sync()?;
+                return Ok(());
+            }
             let type_id = match opts.fs {
                 FsKind::Fat => {
                     format_fat(w, &NewImage::Media(m), label, start, None)?;
@@ -471,6 +559,16 @@ impl Volume {
         }
     }
 
+    /// Consistency problems in an HFS or HFS+ file system (catalog threads, valences,
+    /// counts, block ownership against the bitmap); empty when clean. A test aid.
+    #[doc(hidden)]
+    pub fn hfs_check(&self) -> Result<Vec<String>> {
+        match &self.fs {
+            Fs::Hfs(h) => h.check(),
+            _ => Err(Error::Unsupported("hfs_check on a non-HFS volume".into())),
+        }
+    }
+
     /// Create a new, empty, formatted image file.
     pub fn create(path: &Path, spec: NewImage, opts: &CreateOptions) -> Result<()> {
         let size = spec.size_bytes();
@@ -488,6 +586,17 @@ impl Volume {
             FsKind::Fat => opts.label.as_deref().map(encode_label).transpose()?,
             _ => None,
         };
+        let hfs = matches!(opts.fs, FsKind::Hfs | FsKind::HfsPlus);
+        if opts.scheme == PartitionScheme::Apm && !hfs {
+            return Err(Error::Invalid(
+                "Apple partition maps are for HFS volumes (use --fs hfs)".into(),
+            ));
+        }
+        if hfs && matches!(spec, NewImage::Custom(_)) {
+            return Err(Error::Invalid(
+                "custom layouts are FAT boot sector parameters; they do not apply to HFS".into(),
+            ));
+        }
         let (start, sectors) = partition::new_partition_extent(opts.scheme, size / 512)?;
         let kind = opts
             .container
@@ -500,6 +609,19 @@ impl Volume {
             opts.overwrite,
         )?);
         let result = (|| -> Result<()> {
+            if hfs {
+                let label = opts.label.clone().unwrap_or_else(|| "Untitled".into());
+                let w = Window::new(disk.clone(), start * 512, sectors * 512, true);
+                if opts.fs == FsKind::Hfs {
+                    crate::hfs::format_hfs(w, &label)?;
+                } else {
+                    crate::hfs::format_hfsplus(w, &label)?;
+                }
+                let mut d = lock(&disk)?;
+                write_hfs_table(d.as_mut(), opts.scheme, &label, start, sectors)?;
+                d.sync()?;
+                return Ok(());
+            }
             if opts.fs == FsKind::Exfat {
                 if matches!(spec, NewImage::Custom(_)) {
                     return Err(Error::Invalid(
@@ -522,7 +644,7 @@ impl Volume {
                         start,
                         sectors,
                     )?,
-                    PartitionScheme::None => {}
+                    PartitionScheme::None | PartitionScheme::Apm => {}
                 }
                 d.sync()?;
                 return Ok(());
@@ -552,7 +674,7 @@ impl Volume {
                         start,
                         sectors,
                     )?,
-                    PartitionScheme::None => {}
+                    PartitionScheme::None | PartitionScheme::Apm => {}
                 }
                 d.sync()?;
                 return Ok(());
@@ -592,7 +714,7 @@ impl Volume {
                         start,
                         sectors,
                     )?,
-                    PartitionScheme::None => {}
+                    PartitionScheme::None | PartitionScheme::Apm => {}
                 }
             }
             d.sync()?;
@@ -712,6 +834,48 @@ impl Volume {
                     iso: None,
                 })
             }
+            Fs::Hfs(h) => {
+                let i = h.info();
+                let blocker = h.write_blocker();
+                let cluster = u64::from(i.block_size);
+                Ok(VolumeInfo {
+                    fs_type: match i.kind {
+                        HfsKind::Hfs => "HFS",
+                        HfsKind::Plus if i.journaled => "HFS+ (journaled)",
+                        HfsKind::Plus => "HFS+",
+                        HfsKind::X => "HFSX",
+                    }
+                    .into(),
+                    label: i.label,
+                    volume_id: if i.uuid != 0 {
+                        format!("{:016X}", i.uuid)
+                    } else {
+                        String::new()
+                    },
+                    oem_name: if i.wrapped {
+                        "HFS wrapper".into()
+                    } else {
+                        String::new()
+                    },
+                    bytes_per_sector: 512,
+                    cluster_size: i.block_size,
+                    total_clusters: i.total_blocks,
+                    free_clusters: i.free_blocks,
+                    total_bytes: u64::from(i.total_blocks) * cluster,
+                    free_bytes: u64::from(i.free_blocks) * cluster,
+                    volume_offset: offset,
+                    volume_size: size,
+                    layout: self.image.layout.clone(),
+                    partition: self.image.partition.clone(),
+                    media_format: None,
+                    floppy_format: None,
+                    writable: self.image.writable && blocker.is_none(),
+                    fs_writable: blocker.is_none(),
+                    read_only_reason: blocker,
+                    container,
+                    iso: None,
+                })
+            }
             Fs::Ntfs(n) => {
                 let i = n.info();
                 let cluster = u64::from(i.cluster_size);
@@ -804,6 +968,7 @@ impl Volume {
             Fs::Ext(e) => Ok(e.info().label),
             Fs::Exfat(e) => Ok(e.info().label),
             Fs::Ntfs(n) => Ok(n.label()),
+            Fs::Hfs(h) => Ok(h.label()),
             Fs::Fat(fs) => {
                 let label = match fs.read_volume_label_from_root_dir()? {
                     Some(l) => l,
@@ -826,6 +991,7 @@ impl Volume {
             Fs::Ext(e) => return e.list(&norm(dir)?),
             Fs::Exfat(e) => return e.list(&norm(dir)?),
             Fs::Ntfs(n) => return n.list(&norm(dir)?),
+            Fs::Hfs(h) => return h.list(&norm(dir)?),
             Fs::Fat(fs) => fs,
         };
         let dir = norm(dir)?;
@@ -866,6 +1032,7 @@ impl Volume {
             Fs::Ext(e) => return e.stat(&norm(path)?),
             Fs::Exfat(e) => return e.stat(&norm(path)?),
             Fs::Ntfs(n) => return n.stat(&norm(path)?),
+            Fs::Hfs(h) => return h.stat(&norm(path)?),
             Fs::Fat(fs) => fs,
         };
         let path = norm(path)?;
@@ -876,11 +1043,24 @@ impl Volume {
     /// Copy a file or folder out of the image into `dest` (a host folder, created if missing).
     /// `src` of `""` extracts the whole root. Folders keep their structure.
     pub fn extract(&self, src: &str, dest: &Path, overwrite: bool) -> Result<Stats> {
+        self.extract_with(src, dest, overwrite, ForkMode::Data)
+    }
+
+    /// [`Volume::extract`], choosing what happens to Macintosh resource forks and Finder
+    /// information (HFS / HFS+ only; other file systems ignore `forks`).
+    pub fn extract_with(
+        &self,
+        src: &str,
+        dest: &Path,
+        overwrite: bool,
+        forks: ForkMode,
+    ) -> Result<Stats> {
         let fs = match &self.fs {
             Fs::Iso(iso) => return iso.extract(src, dest, overwrite),
             Fs::Ext(e) => return e.extract(&norm(src)?, dest, overwrite),
             Fs::Exfat(e) => return e.extract(&norm(src)?, dest, overwrite),
             Fs::Ntfs(n) => return n.extract(&norm(src)?, dest, overwrite),
+            Fs::Hfs(h) => return h.extract(&norm(src)?, dest, overwrite, forks),
             Fs::Fat(fs) => fs,
         };
         let src = norm(src)?;
@@ -902,6 +1082,7 @@ impl Volume {
             Fs::Ext(e) => return e.copy_out(&norm(path)?, out),
             Fs::Exfat(e) => return e.copy_out(&norm(path)?, out),
             Fs::Ntfs(n) => return n.copy_out(&norm(path)?, out),
+            Fs::Hfs(h) => return h.copy_out(&norm(path)?, out),
             Fs::Fat(fs) => fs,
         };
         let path = norm(path)?;
@@ -932,9 +1113,27 @@ impl Volume {
 
     /// Copy a host file or folder into folder `dest_dir` of the image (created if missing).
     pub fn inject(&self, host: &Path, dest_dir: &str, overwrite: bool) -> Result<Stats> {
+        self.inject_with(host, dest_dir, overwrite, ForkMode::Data)
+    }
+
+    /// [`Volume::inject`], choosing how Macintosh resource forks and Finder information
+    /// arrive: from AppleDouble `._name` files next to the files, or from MacBinary files
+    /// (HFS / HFS+ only; other file systems ignore `forks`).
+    pub fn inject_with(
+        &self,
+        host: &Path,
+        dest_dir: &str,
+        overwrite: bool,
+        forks: ForkMode,
+    ) -> Result<Stats> {
         match &self.fs {
             Fs::Ext(e) => return e.inject(host, &norm(dest_dir)?, overwrite),
             Fs::Exfat(e) => return e.inject(host, &norm(dest_dir)?, overwrite),
+            Fs::Hfs(h) => {
+                return self
+                    .hfs_rw(h)?
+                    .inject(host, &norm(dest_dir)?, overwrite, forks);
+            }
             _ => {}
         }
         let fs = self.fat_writable()?;
@@ -953,6 +1152,7 @@ impl Volume {
         match &self.fs {
             Fs::Ext(e) => return e.mkdir(&path),
             Fs::Exfat(e) => return e.mkdir(&path),
+            Fs::Hfs(h) => return self.hfs_rw(h)?.mkdir(&path),
             _ => {}
         }
         let fs = self.fat_writable()?;
@@ -968,6 +1168,7 @@ impl Volume {
         match &self.fs {
             Fs::Ext(e) => return e.remove(&path, recursive),
             Fs::Exfat(e) => return e.remove(&path, recursive),
+            Fs::Hfs(h) => return self.hfs_rw(h)?.remove(&path, recursive),
             _ => {}
         }
         self.fat_writable()?;
@@ -1006,12 +1207,13 @@ impl Volume {
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
         let from = norm(from)?;
         let to = norm(to)?;
-        if matches!(self.fs, Fs::Ext(_) | Fs::Exfat(_)) && from.is_empty() {
+        if matches!(self.fs, Fs::Ext(_) | Fs::Exfat(_) | Fs::Hfs(_)) && from.is_empty() {
             return Err(Error::InvalidPath("cannot move the root folder".into()));
         }
         match &self.fs {
             Fs::Ext(e) => return e.rename(&from, &to),
             Fs::Exfat(e) => return e.rename(&from, &to),
+            Fs::Hfs(h) => return self.hfs_rw(h)?.rename(&from, &to),
             _ => {}
         }
         let fs = self.fat_writable()?;
@@ -1307,6 +1509,14 @@ impl Volume {
 
     // --- helpers -------------------------------------------------------------------------
 
+    fn hfs_rw<'h>(&self, h: &'h HfsFs) -> Result<&'h HfsFs> {
+        if self.image.writable {
+            Ok(h)
+        } else {
+            Err(Error::Invalid("the image is open read-only".into()))
+        }
+    }
+
     fn fat_writable(&self) -> Result<&FatFs> {
         match &self.fs {
             Fs::Iso(_) => Err(Error::Unsupported(
@@ -1315,6 +1525,7 @@ impl Volume {
             Fs::Ntfs(_) => Err(Error::Unsupported(
                 "writing to NTFS volumes (read-only so far)".into(),
             )),
+            Fs::Hfs(_) => Err(Error::Unsupported("this operation on HFS volumes".into())),
             Fs::Ext(_) => Err(Error::Unsupported("this operation on ext volumes".into())),
             Fs::Exfat(_) => Err(Error::Unsupported("this operation on exFAT volumes".into())),
             Fs::Fat(fs) if self.image.writable => Ok(fs),
@@ -1538,6 +1749,7 @@ fn to_entry(e: &FatEntry<'_>, parent: &str) -> Entry {
             system: a.contains(FileAttributes::SYSTEM),
             archive: a.contains(FileAttributes::ARCHIVE),
         },
+        mac: None,
         name,
     }
 }
@@ -1575,13 +1787,19 @@ pub(crate) fn host_safe_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
-            if matches!(c, '/' | '\\' | ':' | '\0') || c.is_control() {
+            let bad_here = cfg!(windows) && matches!(c, '<' | '>' | '"' | '|' | '?' | '*');
+            if matches!(c, '/' | '\\' | ':' | '\0') || c.is_control() || bad_here {
                 '_'
             } else {
                 c
             }
         })
         .collect();
+    // Windows drops trailing dots and spaces from names; keep them distinct.
+    let cleaned = match cleaned.trim_end_matches(['.', ' ']) {
+        t if cfg!(windows) && t.len() != cleaned.len() && !t.is_empty() => format!("{t}_"),
+        _ => cleaned,
+    };
     match cleaned.trim() {
         "" | "." | ".." => "_".to_string(),
         _ => cleaned,

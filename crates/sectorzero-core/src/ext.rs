@@ -1265,6 +1265,7 @@ impl Inner {
                 system: !matches!(ino.kind(), S_IFREG | S_IFDIR),
                 archive: false,
             },
+            mac: None,
             name,
         })
     }

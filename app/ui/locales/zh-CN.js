@@ -362,5 +362,13 @@ window.SZ_LOCALES['zh-CN'] = {
   "Exact capacity of the cartridge, laid out the way its maker formatted it for PCs.": "卡带的确切容量，按制造商为 PC 格式化时的布局。",
   "Eject the medium (Zip, Jaz, SuperDisk, MO, CD)": "弹出介质（Zip、Jaz、SuperDisk、MO、CD）",
   "Eject": "弹出",
-  "Ejected {drive}": "已弹出 {drive}"
+  "Ejected {drive}": "已弹出 {drive}",
+  "How Macintosh resource forks and Finder information are copied in and out": "Macintosh 资源分支和 Finder 信息在写入和提取时的处理方式",
+  "Mac forks": "Mac 分支",
+  "Data fork only": "仅数据分支",
+  "AppleDouble (._ files)": "AppleDouble（._ 文件）",
+  "MacBinary": "MacBinary",
+  "Apple partition map": "Apple 分区图",
+  "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS（Mac OS 标准：软盘、Zip 及其他盒式磁盘）",
+  "HFS+ (Mac OS Extended)": "HFS+（Mac OS 扩展）"
 };

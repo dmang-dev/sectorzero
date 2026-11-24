@@ -150,6 +150,7 @@ mod tests {
                 system: false,
                 archive: !is_dir,
             },
+            mac: None,
         }
     }
 

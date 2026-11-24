@@ -45,6 +45,13 @@
       <button id="mnuDiff" role="menuitem" title="Make a new VHD that records changes on top of this one, leaving this file untouched">Create differencing disk…</button>
       <button id="mnuIsoReplace" role="menuitem" title="Overwrite the selected file on this CD image with another file of the same or smaller size">Replace file in ISO…</button>
     </div>
+    <label class="part" id="forksWrap" hidden title="How Macintosh resource forks and Finder information are copied in and out">Mac forks
+      <select id="forksSel" aria-label="Mac forks">
+        <option value="data">Data fork only</option>
+        <option value="appledouble">AppleDouble (._ files)</option>
+        <option value="macbinary">MacBinary</option>
+      </select>
+    </label>
     <label class="part" id="partWrap" hidden>Partition
       <select id="partSel" aria-label="Partition"></select>
     </label>
@@ -100,6 +107,7 @@
           <option value="none">None (one volume)</option>
           <option value="mbr" selected>MBR</option>
           <option value="gpt">GPT</option>
+          <option value="apm">Apple partition map</option>
         </select>
       </label>
       <label id="newFsWrap">File system
@@ -109,6 +117,8 @@
           <option value="ext2">ext2 (Linux)</option>
           <option value="ext3">ext3 (Linux, journaled)</option>
           <option value="ext4">ext4 (Linux)</option>
+          <option value="hfs">HFS (Mac OS Standard: floppies, Zip and other cartridges)</option>
+          <option value="hfs+">HFS+ (Mac OS Extended)</option>
         </select>
       </label>
       <label>Container

@@ -362,5 +362,13 @@ window.SZ_LOCALES['ru'] = {
   "Exact capacity of the cartridge, laid out the way its maker formatted it for PCs.": "Точная ёмкость картриджа и разметка, с которой его форматировал для ПК производитель.",
   "Eject the medium (Zip, Jaz, SuperDisk, MO, CD)": "Извлечь носитель (Zip, Jaz, SuperDisk, MO, CD)",
   "Eject": "Извлечь",
-  "Ejected {drive}": "Носитель {drive} извлечён"
+  "Ejected {drive}": "Носитель {drive} извлечён",
+  "How Macintosh resource forks and Finder information are copied in and out": "Как копируются ветви ресурсов Macintosh и сведения Finder при записи и извлечении",
+  "Mac forks": "Ветви Mac",
+  "Data fork only": "Только ветвь данных",
+  "AppleDouble (._ files)": "AppleDouble (файлы ._)",
+  "MacBinary": "MacBinary",
+  "Apple partition map": "Карта разделов Apple",
+  "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standard: дискеты, Zip и другие картриджи)",
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)"
 };

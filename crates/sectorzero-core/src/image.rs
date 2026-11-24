@@ -61,7 +61,7 @@ impl Image {
                 }
                 (0, len, None)
             }
-            Layout::Mbr(parts) | Layout::Gpt(parts) => {
+            Layout::Mbr(parts) | Layout::Gpt(parts) | Layout::Apm(parts) => {
                 let part = match opts.partition {
                     Some(n) => parts
                         .iter()
@@ -78,7 +78,7 @@ impl Image {
             }
             Layout::Unknown => {
                 return Err(Error::NotFat(
-                    "no FAT boot sector, ISO 9660 descriptor, or MBR/GPT partition table found"
+                    "no FAT boot sector, ISO 9660 descriptor, or MBR/GPT/Apple partition table found"
                         .into(),
                 ));
             }
@@ -174,7 +174,12 @@ impl Image {
         Ok(self.fs_name()? == Some("exFAT"))
     }
 
-    /// Set or (with `None` / empty) remove the volume label (FAT, exFAT, ext).
+    fn is_hfs(&self) -> Result<bool> {
+        Ok(matches!(self.fs_name()?, Some("HFS" | "HFS+" | "HFSX")))
+    }
+
+    /// Set or (with `None` / empty) remove the volume label (FAT, exFAT, ext; HFS volumes
+    /// always have a name).
     pub fn set_label(&self, label: Option<&str>) -> Result<()> {
         self.require_writable()?;
         if self.is_ext()? {
@@ -183,6 +188,10 @@ impl Image {
         }
         if self.is_exfat()? {
             crate::exfat::ExFatFs::open(self.window(), true)?.set_label(label)?;
+            return self.flush();
+        }
+        if self.is_hfs()? {
+            crate::hfs::HfsFs::open(self.window())?.set_label(label)?;
             return self.flush();
         }
         self.require_fat()?;
@@ -264,6 +273,11 @@ impl Image {
             let fs = crate::exfat::ExFatFs::open(self.window(), true)?;
             let n = fs.edit(&path, edit, recursive)?;
             drop(fs);
+            self.flush()?;
+            return Ok(n);
+        }
+        if self.is_hfs()? {
+            let n = crate::hfs::HfsFs::open(self.window())?.edit(&path, edit, recursive)?;
             self.flush()?;
             return Ok(n);
         }

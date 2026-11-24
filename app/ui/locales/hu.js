@@ -362,5 +362,13 @@ window.SZ_LOCALES['hu'] = {
   "Exact capacity of the cartridge, laid out the way its maker formatted it for PCs.": "A kazetta pontos kapacitása, olyan elrendezéssel, ahogy a gyártója PC-re formázta.",
   "Eject the medium (Zip, Jaz, SuperDisk, MO, CD)": "Az adathordozó kiadása (Zip, Jaz, SuperDisk, MO, CD)",
   "Eject": "Kiadás",
-  "Ejected {drive}": "{drive} kiadva"
+  "Ejected {drive}": "{drive} kiadva",
+  "How Macintosh resource forks and Finder information are copied in and out": "Hogyan kerülnek be és ki a Macintosh erőforrás-ágak és a Finder-adatok",
+  "Mac forks": "Mac-ágak",
+  "Data fork only": "Csak az adatág",
+  "AppleDouble (._ files)": "AppleDouble (._ fájlok)",
+  "MacBinary": "MacBinary",
+  "Apple partition map": "Apple-partíciótábla",
+  "HFS (Mac OS Standard: floppies, Zip and other cartridges)": "HFS (Mac OS Standard: hajlékonylemezek, Zip és más kazetták)",
+  "HFS+ (Mac OS Extended)": "HFS+ (Mac OS Extended)"
 };

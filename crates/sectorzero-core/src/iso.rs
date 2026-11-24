@@ -336,6 +336,7 @@ impl IsoFs {
                 system: false,
                 archive: false,
             },
+            mac: None,
         }
     }
 

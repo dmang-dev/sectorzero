@@ -62,8 +62,8 @@ function setStatus(text, kind) {
 
 function layoutName(i) {
   const l = i.layout;
-  if (l.kind === 'Mbr' || l.kind === 'Gpt') {
-    const scheme = l.kind.toUpperCase();
+  if (l.kind === 'Mbr' || l.kind === 'Gpt' || l.kind === 'Apm') {
+    const scheme = l.kind === 'Apm' ? t('Apple partition map') : l.kind.toUpperCase();
     return i.partition ? t('{scheme}, partition {n} ({type})', { scheme, n: i.partition.index, type: i.partition.type_name }) : scheme;
   }
   if (l.kind === 'Iso') return t('CD/DVD image');
@@ -294,9 +294,14 @@ function syncNewDialog() {
   geoEnable($('newGeo'), kind === 'custom');
   // Custom layouts are FAT boot sector parameters.
   $('newFsWrap').hidden = kind === 'custom';
-  const ext = kind !== 'custom' && $('newFs').value.startsWith('ext');
-  $('newLabel').maxLength = ext ? 16 : 11;
-  $('newLabelText').textContent = t('Volume label (optional, up to {n} characters)', { n: ext ? 16 : 11 });
+  const fsv = kind === 'custom' ? 'fat' : $('newFs').value;
+  const n = fsv.startsWith('ext') ? 16 : fsv === 'hfs' ? 27 : fsv === 'hfs+' ? 255 : 11;
+  $('newLabel').maxLength = n;
+  $('newLabelText').textContent = t('Volume label (optional, up to {n} characters)', { n });
+  // Apple partition maps hold HFS volumes only.
+  const hfs = fsv.startsWith('hfs');
+  $('newScheme').querySelector('option[value="apm"]').disabled = !hfs;
+  if (!hfs && $('newScheme').value === 'apm') $('newScheme').value = 'mbr';
   const c = $('newContainer').value;
   $('newDynamic').disabled = !DYNAMIC.includes(c);
   // Media with 2048-byte sectors (magneto-optical) take FAT only.
@@ -344,9 +349,18 @@ async function actionNew() {
   await refresh();
 }
 
+// HFS: how resource forks and Finder information travel (other file systems ignore it).
+function forkMode() {
+  return isHfs() ? $('forksSel').value : 'data';
+}
+
+function isHfs() {
+  return !!state.image && (state.image.info.fs_type || '').startsWith('HFS');
+}
+
 async function injectPaths(paths) {
   if (!paths || paths.length === 0) return;
-  const stats = await withOverwrite((overwrite) => invoke('inject', { paths, dest: state.dir, overwrite }));
+  const stats = await withOverwrite((overwrite) => invoke('inject', { paths, dest: state.dir, overwrite, forks: forkMode() }));
   await refreshInfo();
   await refresh(true);
   if (stats) setStatus(t('Injected {files} file(s), {dirs} folder(s), {bytes} bytes', { files: stats.files, dirs: stats.dirs, bytes: fmtBytes(stats.bytes) }));
@@ -368,7 +382,7 @@ async function actionExtract() {
   // Nothing selected: extract the current folder's contents (the whole image at the root).
   const paths = state.selected.size ? [...state.selected] : state.entries.map((e) => e.path);
   const all = state.dir === '' && state.selected.size === 0;
-  const stats = await withOverwrite((overwrite) => invoke('extract', { paths: all ? [] : paths, dest, overwrite }));
+  const stats = await withOverwrite((overwrite) => invoke('extract', { paths: all ? [] : paths, dest, overwrite, forks: forkMode() }));
   if (stats) setStatus(t('Extracted {files} file(s), {dirs} folder(s), {bytes} bytes to {dest}', { files: stats.files, dirs: stats.dirs, bytes: fmtBytes(stats.bytes), dest }));
 }
 
@@ -1065,6 +1079,8 @@ function updateButtons() {
   $('mnuTruncate').disabled = !(writable() && state.image.info.container.kind === 'raw'
     && state.image.info.layout.kind === 'BareVolume');
   $('partSel').disabled = state.busy;
+  $('forksWrap').hidden = !isHfs();
+  $('forksSel').disabled = state.busy;
 }
 
 function renderPartitions() {

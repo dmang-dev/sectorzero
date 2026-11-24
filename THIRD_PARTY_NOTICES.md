@@ -46,6 +46,7 @@ and the files affected. Also keep the original copyright notice in those files.
 | [adler2](https://github.com/oyvindln/adler2) | Adler-32 checksums | 0BSD OR MIT OR Apache-2.0 |
 | [flate2](https://github.com/rust-lang/flate2-rs) | Compressed QCOW2 clusters | MIT OR Apache-2.0 |
 | [ntfs](https://github.com/ColinFinck/ntfs) | Reading NTFS volumes | MIT OR Apache-2.0 |
+| [unicode-normalization](https://github.com/unicode-rs/unicode-normalization) | Composing and decomposing HFS+ names (NFC / NFD) | MIT OR Apache-2.0 |
 
 ## Test data
 
