@@ -155,8 +155,9 @@ td.c-size, td.c-date, td.c-attr { color: var(--muted); font-variant-numeric: tab
   border-top: 1px solid var(--border);
   color: var(--muted);
 }
-.status.busy #statusLeft::after { content: " — working…"; }
+.status.busy #statusLeft::after { content: " — " attr(data-working); }
 .status.error #statusLeft { color: var(--danger); }
+#statusRight { margin-left: auto; }
 
 dialog {
   border: 1px solid var(--border);
@@ -181,7 +182,8 @@ dialog select, dialog input {
   border-radius: 4px;
   padding: 5px 8px;
 }
-dialog menu { display: flex; justify-content: flex-end; gap: 6px; margin: 14px 0 0; padding: 0; }
+dialog menu { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 14px 0 0; padding: 0; }
+dialog menu button, .toolbar button { white-space: nowrap; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
 dt { color: var(--muted); }
 dd { margin: 0; user-select: text; font-variant-numeric: tabular-nums; }
@@ -265,3 +267,16 @@ dialog fieldset.choice { flex-wrap: wrap; }
 .drives input { margin-top: 3px !important; }
 .drives .sub { grid-column: 2; color: var(--muted); font-size: 12px; }
 dialog button.danger:not(:disabled) { color: var(--danger); }
+
+/* Language picker (status bar) and hiding the English text until the language is applied */
+html:not(.ready) body { visibility: hidden; }
+.status .lang {
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0 2px;
+}
+.status .lang:hover, .status .lang:focus { border-color: var(--border); color: var(--text); }

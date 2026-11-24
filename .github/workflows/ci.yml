@@ -46,6 +46,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
+      - name: UI translations
+        if: runner.os == 'Linux'
+        run: node app/i18n-check.mjs
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 

@@ -55,7 +55,7 @@
   <main id="main">
     <section class="empty" id="empty">
       <h1>SectorZero</h1>
-      <p>Drop a disk image here, or use <strong>Open</strong> or <strong>New</strong>.</p>
+      <p data-i18n-html>Drop a disk image here, or use <strong>Open</strong> or <strong>New</strong>.</p>
       <p class="hint">Opens raw and split raw images (.ima .img .vfd .flp .dsk .001), WinImage IMZ/WLZ, VHD (including
         differencing and undo disks), VHDX, VMDK, VDI, QCOW2 and PC-98 NHD/HDI/FDI (bare FAT volumes, MBR or GPT
         disks), plus ISO, BIN/CUE, NRG and MDS/MDF CD images.</p>
@@ -72,6 +72,7 @@
   <footer class="status">
     <span id="statusLeft">No image</span>
     <span id="statusRight"></span>
+    <select id="langSel" class="lang" aria-label="Language" title="Language"></select>
   </footer>
 
   <dialog id="newDlg">
@@ -333,6 +334,7 @@
     </form>
   </dialog>
 
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
