@@ -19,7 +19,7 @@ jobs:
     name: Check version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Tag matches Cargo.toml and tauri.conf.json
         if: github.ref_type == 'tag'
         shell: bash
@@ -63,7 +63,7 @@ jobs:
             cli: s0
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Linux packages for Tauri
         if: runner.os == 'Linux'
@@ -81,7 +81,7 @@ jobs:
         with:
           key: ${{ matrix.name }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -124,14 +124,14 @@ jobs:
           (cd dist && sha256sum * > "SHA256SUMS-${{ matrix.name }}.txt")
           ls -l dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sectorzero-${{ matrix.name }}
           path: dist/*
 
       - name: Attach to draft release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true
