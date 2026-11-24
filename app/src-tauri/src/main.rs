@@ -140,6 +140,11 @@ fn formats() -> Vec<FloppyFormat> {
     FLOPPY_FORMATS.to_vec()
 }
 
+#[tauri::command]
+fn media_formats() -> Vec<sectorzero_core::MediaFormat> {
+    sectorzero_core::MEDIA_FORMATS.to_vec()
+}
+
 #[tauri::command(async)]
 fn open_image(
     path: String,
@@ -168,9 +173,11 @@ fn spec_of(
         return Ok(NewImage::Custom(g));
     }
     match (format, size_mb) {
-        (Some(f), _) => Ok(NewImage::Floppy(
-            FloppyFormat::find(f).ok_or_else(|| invalid(format!("Unknown format {f}")))?,
-        )),
+        (Some(f), _) => match (FloppyFormat::find(f), sectorzero_core::MediaFormat::find(f)) {
+            (Some(f), _) => Ok(NewImage::Floppy(f)),
+            (None, Some(m)) => Ok(NewImage::Media(m)),
+            _ => Err(invalid(format!("Unknown format {f}"))),
+        },
         (None, Some(mb)) if mb > 0.0 => Ok(NewImage::Volume {
             size_bytes: (mb * 1024.0 * 1024.0) as u64,
         }),
@@ -372,6 +379,18 @@ fn change_format(
 ) -> CmdResult<Opened> {
     let (path, opts) = current_opts(&state, true)?;
     Volume::change_format(&path, &opts, spec_of(format.as_deref(), size_mb, geometry)?)?;
+    reopened(&state)
+}
+
+/// Resize a partitioned disk (see `Volume::resize_disk`).
+#[tauri::command(async)]
+fn resize_disk(size_mb: f64, keep_partitions: bool, state: State<AppState>) -> CmdResult<Opened> {
+    let (path, opts) = current_opts(&state, true)?;
+    if !(size_mb.is_finite() && size_mb >= 2.0) {
+        return Err(Error::Invalid("the disk size must be 2 MB or more".into()).into());
+    }
+    let size = (size_mb * 1_048_576.0) as u64 / 512 * 512;
+    Volume::resize_disk(&path, &opts, size, !keep_partitions)?;
     reopened(&state)
 }
 
@@ -606,6 +625,37 @@ fn write_drive(
     )?)
 }
 
+/// Erase a whole drive: zeros, or random data and then zeros.
+#[tauri::command(async)]
+fn wipe_drive(
+    drive: String,
+    random: bool,
+    verify: bool,
+    allow_fixed: bool,
+    app: tauri::AppHandle,
+) -> CmdResult<DriveWriteReport> {
+    let mut progress = emitter(&app);
+    Ok(sectorzero_core::wipe_drive(
+        &drive,
+        &sectorzero_core::DriveWipeOptions {
+            pattern: if random {
+                sectorzero_core::WipePattern::Random
+            } else {
+                sectorzero_core::WipePattern::Zero
+            },
+            verify,
+            allow_fixed,
+        },
+        &mut progress,
+    )?)
+}
+
+/// Eject a removable drive's medium.
+#[tauri::command(async)]
+fn eject_drive(drive: String) -> CmdResult<()> {
+    Ok(sectorzero_core::eject_drive(&drive)?)
+}
+
 /// Files copied out of images (for opening or dragging) go under here. The folder is
 /// cleared when the app starts and when it exits.
 fn temp_root() -> PathBuf {
@@ -701,6 +751,7 @@ fn main() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             formats,
+            media_formats,
             open_image,
             new_image,
             close_image,
@@ -718,6 +769,7 @@ fn main() {
             import_boot,
             defrag,
             change_format,
+            resize_disk,
             save_as,
             make_iso,
             export_boot_image,
@@ -733,6 +785,8 @@ fn main() {
             drives,
             read_drive,
             write_drive,
+            wipe_drive,
+            eject_drive,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting SectorZero");

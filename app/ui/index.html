@@ -29,7 +29,7 @@
       <button id="btnLabel" data-needs-writable title="Change the volume label">Label</button>
       <button id="btnBoot" data-needs-writable title="Boot sector properties, import and export">Boot sector</button>
       <button id="btnDefrag" data-needs-writable title="Defragment the image">Defrag</button>
-      <button id="btnFormat" data-needs-writable title="Change the format or size of a floppy / volume image">Change format</button>
+      <button id="btnFormat" data-needs-writable title="Change the format or size of an image">Change format</button>
       <button id="btnBootImage" data-needs-image hidden title="Save the El Torito boot image of this ISO">Boot image</button>
     </div>
     <div class="group">
@@ -81,12 +81,17 @@
       <fieldset class="choice">
         <label><input type="radio" name="newKind" value="floppy" checked> Floppy</label>
         <label><input type="radio" name="newKind" value="disk"> Hard disk / volume</label>
+        <label><input type="radio" name="newKind" value="media"> Removable media</label>
         <label><input type="radio" name="newKind" value="custom"> Custom layout</label>
       </fieldset>
       <div data-kind="custom" hidden><div class="geo" id="newGeo"></div></div>
       <label data-kind="floppy">Format
         <select id="newFormat"></select>
       </label>
+      <label data-kind="media" hidden>Medium
+        <select id="newMedia"></select>
+      </label>
+      <p class="hint" data-kind="media" hidden>Exact capacity of the cartridge, laid out the way its maker formatted it for PCs.</p>
       <label data-kind="disk" hidden>Size (MB)
         <input id="newSize" type="number" min="2" step="1" value="512">
       </label>
@@ -181,6 +186,21 @@
       <menu>
         <button value="cancel" formnovalidate>Close</button>
         <button value="ok" class="primary" id="defragGo">Defragment</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="resizeDlg">
+    <form method="dialog">
+      <h2>Resize disk</h2>
+      <p class="hint">Changes the size of the disk. The last partition grows or shrinks with it: its FAT volume is rebuilt, keeping files, dates, attributes, label, serial number and boot code.</p>
+      <label>Disk size (MB)
+        <input id="resizeSize" type="number" min="2" step="1" value="64" required>
+      </label>
+      <label class="check"><input type="checkbox" id="resizeKeep"> Keep the partition sizes (only the disk and the partition table change)</label>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">Resize</button>
       </menu>
     </form>
   </dialog>
@@ -308,9 +328,40 @@
         <button type="button" id="driveRefresh">Refresh</button>
         <span class="spacer"></span>
         <button value="cancel" formnovalidate>Close</button>
+        <button value="eject" id="driveEject" title="Eject the medium (Zip, Jaz, SuperDisk, MO, CD)">Eject</button>
         <button value="open" id="driveOpen" title="Browse the drive (read-only)">Open</button>
         <button value="read" id="driveRead" title="Copy the whole drive into an image file">Read to image…</button>
+        <button value="copy" id="driveCopy" title="Copy the whole drive onto another drive">Copy to drive…</button>
         <button value="write" id="driveWrite" class="danger" title="Replace everything on the drive with an image">Write image…</button>
+        <button value="wipe" id="driveWipe" class="danger" title="Erase the whole drive, partitions included">Wipe…</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="copyDlg">
+    <form method="dialog">
+      <h2 id="copyTitle">Copy to drive</h2>
+      <p class="hint">Every sector is copied; the target must be at least as large. Everything on it is replaced.</p>
+      <label>Target drive <select id="copyTarget"></select></label>
+      <label class="check" id="copyFixedWrap" hidden><input type="checkbox" id="copyFixed"> The target is a fixed disk: allow writing to it</label>
+      <menu>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" id="copyOk" class="danger">Copy</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="wipeDlg">
+    <form method="dialog">
+      <h2>Wipe drive</h2>
+      <p id="wipeText"></p>
+      <p class="hint">This cannot be undone.</p>
+      <label class="check"><input type="checkbox" id="wipeRandom"> Write random data first (two passes)</label>
+      <menu>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="danger">Wipe</button>
       </menu>
     </form>
   </dialog>

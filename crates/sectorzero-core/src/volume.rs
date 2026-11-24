@@ -18,7 +18,7 @@ use crate::error::{Error, Result, display};
 use crate::exfat::ExFatFs;
 use crate::ext::{ExtFormat, ExtFs};
 use crate::fatraw;
-use crate::format::{FloppyFormat, NewImage};
+use crate::format::{FloppyFormat, MediaFormat, MediaLayout, NewImage};
 use crate::image::{Image, OpenOptions};
 use crate::iso::{IsoFs, IsoInfo};
 use crate::ntfsfs::NtfsFs;
@@ -98,6 +98,8 @@ pub struct VolumeInfo {
     pub partition: Option<PartitionInfo>,
     /// The standard floppy geometry this matches, if any.
     pub floppy_format: Option<&'static str>,
+    /// The removable medium (Zip, Jaz, SuperDisk, MO, …) whose capacity the disk has.
+    pub media_format: Option<&'static str>,
     /// Opened for writing.
     pub writable: bool,
     /// Whether this file system can be modified at all (ISO 9660 and NTFS cannot).
@@ -160,6 +162,24 @@ enum Fs {
     Ntfs(Box<NtfsFs>),
 }
 
+/// Result of [`Volume::resize_disk`].
+#[derive(Debug, Clone, Serialize)]
+pub struct DiskResize {
+    pub old_size: u64,
+    pub new_size: u64,
+    /// The partition that changed size, if any.
+    pub partition: Option<PartitionResize>,
+    /// Files copied into the rebuilt partition.
+    pub stats: Option<Stats>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PartitionResize {
+    pub index: usize,
+    pub old_bytes: u64,
+    pub new_bytes: u64,
+}
+
 /// Syncs the container when dropped, after the file system (declared before it) unmounted.
 struct SyncOnDrop(SharedDisk);
 
@@ -186,14 +206,18 @@ fn format_fat(
     hidden: u64,
     volume_id: Option<u32>,
 ) -> Result<()> {
-    let sectors = w.len() / 512;
+    let ss = match spec {
+        NewImage::Media(m) => m.sector_size,
+        _ => 512,
+    };
+    let sectors = w.len() / u64::from(ss);
     if sectors < 64 {
         return Err(Error::Invalid("image is too small".into()));
     }
     let total = u32::try_from(sectors)
         .map_err(|_| Error::Invalid("volume is too large for FAT (2 TiB limit)".into()))?;
     let mut fmt = FormatVolumeOptions::new()
-        .bytes_per_sector(512)
+        .bytes_per_sector(ss as u16)
         .total_sectors(total)
         .fats(2)
         .volume_id(volume_id.unwrap_or_else(new_volume_id));
@@ -217,6 +241,22 @@ fn format_fat(
             .sectors_per_track(63)
             .heads(255)
             .drive_num(0x80),
+        NewImage::Media(m) => {
+            let mut f = fmt
+                .media(m.media)
+                .sectors_per_track(m.sectors_per_track)
+                .heads(m.heads)
+                .drive_num(0x80);
+            if m.bytes_per_cluster != 0 {
+                f = f.bytes_per_cluster(m.bytes_per_cluster);
+            }
+            match m.fat_bits {
+                12 => f.fat_type(FatType::Fat12),
+                16 => f.fat_type(FatType::Fat16),
+                32 => f.fat_type(FatType::Fat32),
+                _ => f,
+            }
+        }
         NewImage::Custom(g) => {
             g.validate()?;
             let mut f = fmt
@@ -310,6 +350,105 @@ impl Volume {
         })
     }
 
+    /// A removable medium preset: the vendor's layout (superfloppy, or one partition in a
+    /// given MBR slot) in the drive's own geometry.
+    fn create_media(path: &Path, m: &'static MediaFormat, opts: &CreateOptions) -> Result<()> {
+        if opts.scheme != PartitionScheme::None {
+            return Err(Error::Invalid(format!(
+                "{} images come with their own layout; leave out the partition table",
+                m.name
+            )));
+        }
+        let ss = u64::from(m.sector_size);
+        if ss != 512 && opts.fs != FsKind::Fat {
+            return Err(Error::Invalid(format!(
+                "{} has {ss}-byte sectors: only FAT is supported on it",
+                m.name
+            )));
+        }
+        let (start, slot) = match m.layout {
+            MediaLayout::Superfloppy => (0, 0),
+            MediaLayout::Mbr { slot, start } => (u64::from(start), slot),
+        };
+        let sectors = m.total_sectors - start;
+        let label = match opts.fs {
+            FsKind::Fat => opts.label.as_deref().map(encode_label).transpose()?,
+            _ => None,
+        };
+        let kind = opts
+            .container
+            .unwrap_or_else(|| ContainerKind::from_path(path));
+        let disk = container::share(container::create(
+            path,
+            kind,
+            m.size_bytes(),
+            opts.dynamic,
+            opts.overwrite,
+        )?);
+        let result = (|| -> Result<()> {
+            let w = Window::new(disk.clone(), start * ss, sectors * ss, true);
+            let type_id = match opts.fs {
+                FsKind::Fat => {
+                    format_fat(w, &NewImage::Media(m), label, start, None)?;
+                    let mut d = lock(&disk)?;
+                    let mut boot = vec![0u8; ss as usize];
+                    d.read_at(start * ss, &mut boot)?;
+                    let bits = fatraw::Bpb::parse(&boot)?.fat_bits;
+                    if start != 0 {
+                        put_le32(&mut boot, 28, start as u32);
+                        d.write_at(start * ss, &boot)?;
+                        let backup = u64::from(le16(&boot, 50));
+                        if bits == 32 && backup != 0 {
+                            d.write_at((start + backup) * ss, &boot)?;
+                        }
+                    }
+                    // CHS types (0x06, 0x0B) while the partition ends below cylinder
+                    // 1024, as Iomega's tools wrote them; LBA types beyond.
+                    let chs_ok = m.total_sectors
+                        <= 1024 * u64::from(m.heads) * u64::from(m.sectors_per_track);
+                    match (bits, chs_ok) {
+                        (16, true) if sectors >= 65536 => 0x06,
+                        (32, true) => 0x0B,
+                        _ => partition::mbr_type_for(bits, sectors),
+                    }
+                }
+                FsKind::Exfat => {
+                    crate::exfat::format(w, opts.label.as_deref(), start)?;
+                    0x07
+                }
+                _ => {
+                    crate::ext::format(
+                        w,
+                        &ExtFormat {
+                            journal: opts.fs == FsKind::Ext3,
+                            ext4: opts.fs == FsKind::Ext4,
+                            label: opts.label.clone(),
+                        },
+                    )?;
+                    0x83
+                }
+            };
+            let mut d = lock(&disk)?;
+            if slot != 0 {
+                partition::write_media_mbr(
+                    d.as_mut(),
+                    slot,
+                    type_id,
+                    start,
+                    sectors,
+                    (m.heads, m.sectors_per_track),
+                )?;
+            }
+            d.sync()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            drop(disk);
+            let _ = std::fs::remove_file(path);
+        }
+        result
+    }
+
     /// Consistency problems in an ext file system (checksums, bitmaps, counts, links);
     /// empty when clean. A test aid: e2fsck remains the real check.
     #[doc(hidden)]
@@ -341,6 +480,9 @@ impl Volume {
             return Err(Error::Invalid(
                 "floppy and custom-geometry images have no partition table".into(),
             ));
+        }
+        if let NewImage::Media(m) = spec {
+            return Self::create_media(path, m, opts);
         }
         let label = match opts.fs {
             FsKind::Fat => opts.label.as_deref().map(encode_label).transpose()?,
@@ -469,6 +611,12 @@ impl Volume {
     }
 
     pub fn info(&self) -> Result<VolumeInfo> {
+        let mut i = self.fs_info()?;
+        i.media_format = MediaFormat::matching(i.container.virtual_size).map(|m| m.name);
+        Ok(i)
+    }
+
+    fn fs_info(&self) -> Result<VolumeInfo> {
         let container = self.image.container();
         let (offset, size) = (self.image.offset, self.image.len);
         match &self.fs {
@@ -497,6 +645,7 @@ impl Volume {
                     volume_size: size,
                     layout: self.image.layout.clone(),
                     partition: None,
+                    media_format: None,
                     floppy_format: None,
                     writable: false,
                     fs_writable: false,
@@ -523,6 +672,7 @@ impl Volume {
                     volume_size: size,
                     layout: self.image.layout.clone(),
                     partition: self.image.partition.clone(),
+                    media_format: None,
                     floppy_format: None,
                     writable: self.image.writable && blocker.is_none(),
                     fs_writable: blocker.is_none(),
@@ -553,6 +703,7 @@ impl Volume {
                     volume_size: size,
                     layout: self.image.layout.clone(),
                     partition: self.image.partition.clone(),
+                    media_format: None,
                     floppy_format: None,
                     writable: self.image.writable && blocker.is_none(),
                     fs_writable: blocker.is_none(),
@@ -585,6 +736,7 @@ impl Volume {
                     volume_size: size,
                     layout: self.image.layout.clone(),
                     partition: self.image.partition.clone(),
+                    media_format: None,
                     floppy_format: None,
                     writable: false,
                     fs_writable: false,
@@ -625,6 +777,7 @@ impl Volume {
                     volume_size: size,
                     layout: self.image.layout.clone(),
                     partition: self.image.partition.clone(),
+                    media_format: None,
                     floppy_format: FloppyFormat::matching(
                         total_sectors,
                         le16(s, 24),
@@ -900,6 +1053,12 @@ impl Volume {
     /// "Change format". Files, folders, attributes, timestamps, label, serial number and boot
     /// code are kept. The image keeps its container (IMZ stays IMZ, VHDX stays VHDX…).
     pub fn change_format(path: &Path, opts: &OpenOptions, spec: NewImage) -> Result<Stats> {
+        if let NewImage::Media(m) = spec {
+            return Err(Error::Invalid(format!(
+                "{} is a removable medium preset: create a new image with it, or give a size",
+                m.name
+            )));
+        }
         let src = Volume::open(
             path,
             &OpenOptions {
@@ -918,7 +1077,6 @@ impl Volume {
             ));
         }
         let like = src.image.container();
-        let label = src.label()?;
         let size = spec.size_bytes();
         let dir = path
             .parent()
@@ -927,48 +1085,9 @@ impl Volume {
         let tmp = tempfile::Builder::new().prefix(".s0-").tempdir_in(dir)?;
         let scratch = tmp.path().join("scratch.img");
         let new_disk = container::share(Box::new(container::raw::RawDisk::create(&scratch, size)?));
-
-        let label_bytes = if label.is_empty() {
-            None
-        } else {
-            Some(encode_label(&label)?)
-        };
-        format_fat(
-            Window::new(new_disk.clone(), 0, size, true),
-            &spec,
-            label_bytes,
-            0,
-            Some(sfs.volume_id()),
-        )?;
-        let mut stats = Stats::default();
-        {
-            let dfs = FileSystem::new(
-                Window::new(new_disk.clone(), 0, size, true),
-                FsOptions::new().update_accessed_date(false),
-            )
-            .map_err(|e| Error::NotFat(e.to_string()))?;
-            copy_dir(sfs.root_dir(), dfs.root_dir(), "", &mut stats).map_err(|e| match e {
-                Error::Io(ref io) if io.to_string().contains("No space") => {
-                    Error::Invalid("the files do not fit in the new format".into())
-                }
-                other => other,
-            })?;
-            dfs.unmount()?;
-        }
-        // Raw pass: attributes and timestamps fatfs cannot set, then boot code and label.
-        let mut sw = src.image.window();
-        let mut dw = Window::new(new_disk.clone(), 0, size, true);
-        fatraw::copy_metadata(&mut sw, &mut dw)?;
-        let sboot = fatraw::read_boot(&mut sw)?;
-        let (sb, db) = (
-            fatraw::Bpb::parse(&sboot)?,
-            fatraw::Bpb::parse(&fatraw::read_boot(&mut dw)?)?,
-        );
-        if sb.fat_bits == db.fat_bits && fatraw::boot_info(&sboot)?.has_boot_code {
-            fatraw::import_boot(&mut dw, &sboot)?;
-        }
-        fatraw::set_label(&mut dw, label_bytes)?;
-        drop(sw);
+        let (stats, _) =
+            src.rebuild_fat_into(sfs, Window::new(new_disk.clone(), 0, size, true), &spec, 0)?;
+        let dw = Window::new(new_disk.clone(), 0, size, true);
         drop(src);
 
         // Write the new volume into a fresh container of the same kind, then swap it in.
@@ -985,6 +1104,205 @@ impl Volume {
         drop(new_disk);
         container::replace_file(&out, path)?;
         Ok(stats)
+    }
+
+    /// Format `dst` as FAT (`spec`, first sector `hidden` on its disk) and copy this volume's
+    /// files, folders, attributes, times, label, serial number and boot code into it.
+    /// Returns the copy's statistics and its FAT type (12, 16 or 32).
+    fn rebuild_fat_into(
+        &self,
+        sfs: &FatFs,
+        dst: Window,
+        spec: &NewImage,
+        hidden: u64,
+    ) -> Result<(Stats, u8)> {
+        let label = self.label()?;
+        let label_bytes = if label.is_empty() {
+            None
+        } else {
+            Some(encode_label(&label)?)
+        };
+        let mut dw = dst.reopen();
+        format_fat(dst, spec, label_bytes, hidden, Some(sfs.volume_id()))?;
+        if hidden != 0 {
+            // fatfs has no hidden-sectors option: patch the BPB (and FAT32's backup).
+            let mut boot = fatraw::read_boot(&mut dw)?;
+            put_le32(&mut boot, 28, hidden.min(u64::from(u32::MAX)) as u32);
+            dw.write_at(0, &boot)?;
+            let b = fatraw::Bpb::parse(&boot)?;
+            if b.fat_bits == 32 && b.backup_boot != 0 {
+                dw.write_at(b.backup_boot * 512, &boot)?;
+            }
+        }
+        let mut stats = Stats::default();
+        {
+            let dfs = FileSystem::new(dw.reopen(), FsOptions::new().update_accessed_date(false))
+                .map_err(|e| Error::NotFat(e.to_string()))?;
+            copy_dir(sfs.root_dir(), dfs.root_dir(), "", &mut stats).map_err(|e| match e {
+                Error::Io(ref io) if io.to_string().contains("No space") => {
+                    Error::Invalid("the files do not fit in the new format".into())
+                }
+                other => other,
+            })?;
+            dfs.unmount()?;
+        }
+        // Raw pass: attributes and timestamps fatfs cannot set, then boot code and label.
+        let mut sw = self.image.window();
+        fatraw::copy_metadata(&mut sw, &mut dw)?;
+        let sboot = fatraw::read_boot(&mut sw)?;
+        let (sb, db) = (
+            fatraw::Bpb::parse(&sboot)?,
+            fatraw::Bpb::parse(&fatraw::read_boot(&mut dw)?)?,
+        );
+        if sb.fat_bits == db.fat_bits && fatraw::boot_info(&sboot)?.has_boot_code {
+            fatraw::import_boot(&mut dw, &sboot)?;
+        }
+        fatraw::set_label(&mut dw, label_bytes)?;
+        Ok((stats, db.fat_bits))
+    }
+
+    /// Change the size of a partitioned (MBR or GPT) disk image. The container keeps its kind.
+    /// With `grow_last`, the last partition takes up the new end of the disk (or gives up the
+    /// space when shrinking); its FAT volume is rebuilt at the new size, keeping files,
+    /// attributes, times, label, serial and boot code. Without it partitions keep their size
+    /// and only the table moves (GPT's backup header). Other partitions are copied as they are.
+    pub fn resize_disk(
+        path: &Path,
+        opts: &OpenOptions,
+        new_size: u64,
+        grow_last: bool,
+    ) -> Result<DiskResize> {
+        if !new_size.is_multiple_of(512) || new_size < 2 << 20 {
+            return Err(Error::Invalid(
+                "the new size must be a whole number of sectors, 2 MiB or more".into(),
+            ));
+        }
+        let mut src_disk = container::open(path, false, opts.member.as_deref())?;
+        let old_size = src_disk.size();
+        let layout = partition::detect(src_disk.as_mut())?;
+        let parts = layout.partitions().to_vec();
+        if !matches!(layout, Layout::Mbr(_) | Layout::Gpt(_)) || parts.is_empty() {
+            return Err(Error::Invalid(
+                "not a partitioned disk (use the floppy / volume resize for bare volumes)".into(),
+            ));
+        }
+        if src_disk.sector_size() != 512 {
+            return Err(Error::Unsupported(
+                "resizing disks with sectors other than 512 bytes".into(),
+            ));
+        }
+        if matches!(layout, Layout::Mbr(_)) && new_size > (1u64 << 32) * 512 {
+            return Err(Error::Invalid(
+                "MBR disks are limited to 2 TiB; use GPT".into(),
+            ));
+        }
+        let like = src_disk.info();
+        let last = parts
+            .iter()
+            .filter(|p| !matches!(p.type_id.as_str(), "0x05" | "0x0F" | "0x85"))
+            .max_by_key(|p| p.start_lba + p.sectors)
+            .cloned()
+            .expect("partitions");
+        let outer_end = parts
+            .iter()
+            .map(|p| p.start_lba + p.sectors)
+            .max()
+            .unwrap_or(0);
+        if grow_last && last.start_lba + last.sectors < outer_end {
+            return Err(Error::Unsupported(
+                "growing a logical partition inside an extended one".into(),
+            ));
+        }
+        let total = new_size / 512;
+        // Where the last partition may end on the new disk.
+        let probe_limit = partition::last_usable(&layout, src_disk.as_mut(), total)?;
+        let resize = if grow_last {
+            if last.start_lba + 64 > probe_limit {
+                return Err(Error::Invalid(format!(
+                    "the new size leaves no room for partition {}",
+                    last.index
+                )));
+            }
+            let sectors = probe_limit + 1 - last.start_lba;
+            if !last.is_fat {
+                return Err(Error::Unsupported(format!(
+                    "resizing the {} file system in partition {} (FAT only; keep the partition sizes to resize just the disk)",
+                    last.fs.unwrap_or("unknown"),
+                    last.index
+                )));
+            }
+            Some((last.index, sectors))
+        } else {
+            None
+        };
+
+        let dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let tmp = tempfile::Builder::new().prefix(".s0-").tempdir_in(dir)?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
+        let out = tmp.path().join(file_name);
+        let new_disk = container::share(container::create_like(&out, &like, new_size)?);
+        // Everything up to the rebuilt partition (or the whole disk) as it is; on GPT, not
+        // the old backup header and entries.
+        let keep = match (&resize, &layout) {
+            (Some(_), _) => last.start_lba * 512,
+            (None, Layout::Gpt(_)) => outer_end * 512,
+            (None, _) => old_size,
+        };
+        {
+            let mut to = lock(&new_disk)?;
+            container::copy_sparse(src_disk.as_mut(), to.as_mut(), keep.min(new_size))?;
+        }
+        drop(src_disk);
+        let mut report = DiskResize {
+            old_size,
+            new_size,
+            partition: None,
+            stats: None,
+        };
+        let mut mbr_type = None;
+        if let Some((index, sectors)) = resize {
+            let src = Volume::open(
+                path,
+                &OpenOptions {
+                    writable: false,
+                    partition: Some(index),
+                    member: opts.member.clone(),
+                },
+            )?;
+            let Fs::Fat(sfs) = &src.fs else {
+                return Err(Error::Unsupported("resizing a non-FAT partition".into()));
+            };
+            let (stats, bits) = src.rebuild_fat_into(
+                sfs,
+                Window::new(new_disk.clone(), last.start_lba * 512, sectors * 512, true),
+                &NewImage::Volume {
+                    size_bytes: sectors * 512,
+                },
+                last.start_lba,
+            )?;
+            if matches!(layout, Layout::Mbr(_)) {
+                mbr_type = Some(partition::mbr_type_for(bits, sectors));
+            }
+            report.partition = Some(PartitionResize {
+                index,
+                old_bytes: last.sectors * 512,
+                new_bytes: sectors * 512,
+            });
+            report.stats = Some(stats);
+        }
+        {
+            let mut d = lock(&new_disk)?;
+            partition::fit_table(d.as_mut(), &layout, resize.map(|(i, n)| (i, n, mbr_type)))?;
+            d.sync()?;
+        }
+        drop(new_disk);
+        container::replace_file(&out, path)?;
+        Ok(report)
     }
 
     // --- helpers -------------------------------------------------------------------------

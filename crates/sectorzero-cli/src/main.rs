@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use sectorzero_core::{
-    BootPlatform, BootSectorEdit, Checksums, ContainerKind, CreateOptions, DriveWriteOptions,
-    Entry, EntryEdit, FLOPPY_FORMATS, FloppyFormat, FsKind, Geometry, Image, IsoBuildOptions,
-    Layout, ListingFormat, NewImage, OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo,
-    build_iso, checksum_file, convert_with_progress, create_differencing, drive_info, list_drives,
-    probe, render_listing, truncate_image, write_image_to_drive,
+    BootPlatform, BootSectorEdit, Checksums, ContainerKind, CreateOptions, DriveWipeOptions,
+    DriveWriteOptions, Entry, EntryEdit, FLOPPY_FORMATS, FloppyFormat, FsKind, Geometry, Image,
+    IsoBuildOptions, Layout, ListingFormat, MEDIA_FORMATS, MediaFormat, MediaLayout, NewImage,
+    OpenOptions, PartitionScheme, Stats, Volume, VolumeInfo, WipePattern, build_iso, checksum_file,
+    convert_with_progress, create_differencing, drive_info, list_drives, probe, render_listing,
+    truncate_image, wipe_drive, write_image_to_drive,
 };
 
 #[derive(Parser)]
@@ -99,7 +100,8 @@ impl From<Container> for ContainerKind {
 
 #[derive(clap::Args)]
 struct FormatSpec {
-    /// Floppy format id (see `s0 formats`), e.g. 1440, 720, dmf2048.
+    /// Floppy format or removable medium id (see `s0 formats`), e.g. 1440, 720, dmf2048,
+    /// zip100, ls120. Media presets are laid out the way their vendor formatted them.
     #[arg(
         short,
         long,
@@ -184,10 +186,11 @@ impl FormatSpec {
             return self.custom();
         }
         Ok(match (&self.format, &self.size) {
-            (Some(f), _) => NewImage::Floppy(
-                FloppyFormat::find(f)
-                    .with_context(|| format!("unknown format {f:?}; see `s0 formats`"))?,
-            ),
+            (Some(f), _) => match (FloppyFormat::find(f), MediaFormat::find(f)) {
+                (Some(f), _) => NewImage::Floppy(f),
+                (None, Some(m)) => NewImage::Media(m),
+                _ => bail!("unknown format {f:?}; see `s0 formats`"),
+            },
             (None, Some(s)) => NewImage::Volume {
                 size_bytes: parse_size(s)?,
             },
@@ -430,11 +433,17 @@ enum Cmd {
         zero_free: bool,
     },
     /// Change the format/size of a floppy or volume image, keeping its files ("Change format").
+    /// On a partitioned (MBR/GPT) disk, `--size` changes the disk size: the last partition
+    /// grows or shrinks with it (its FAT volume is rebuilt, keeping its files), or with
+    /// --keep-partitions only the disk and partition table change.
     Resize {
         #[command(flatten)]
         img: Img,
         #[command(flatten)]
         spec: FormatSpec,
+        /// Partitioned disks: leave every partition's size alone.
+        #[arg(long)]
+        keep_partitions: bool,
     },
     /// Copy an image into another container (e.g. IMA → VHDX, VMDK → IMZ). With a drive as
     /// SOURCE (see `s0 drives`), reads the drive into an image.
@@ -549,9 +558,10 @@ enum Cmd {
     /// paths work wherever an image is expected, and as `s0 convert` sources.
     Drives,
     /// Write an image onto a physical drive sector for sector, replacing everything on it,
-    /// then read it back to verify. Needs administrator rights (root on Linux).
+    /// then read it back to verify. The source can also be another drive (drive-to-drive
+    /// copy). Needs administrator rights (root on Linux).
     WriteDrive {
-        /// Image file (any container s0 reads).
+        /// Image file (any container s0 reads), or a drive path to copy from.
         image: PathBuf,
         /// Drive path from `s0 drives`, e.g. \\.\PhysicalDrive2, \\.\A: or /dev/sdb.
         drive: String,
@@ -567,6 +577,30 @@ enum Cmd {
         /// Do not ask for confirmation.
         #[arg(short, long)]
         yes: bool,
+    },
+    /// Overwrite a whole physical drive with zeros (or random data, then zeros), removing
+    /// its partitions and file systems. Needs administrator rights (root on Linux).
+    WipeDrive {
+        /// Drive path from `s0 drives`.
+        drive: String,
+        /// A pass of pseudo-random data before the zeros.
+        #[arg(long)]
+        random: bool,
+        /// Skip reading the drive back.
+        #[arg(long)]
+        no_verify: bool,
+        /// Allow a fixed (non-removable) disk. The system disk is always refused.
+        #[arg(long)]
+        allow_fixed: bool,
+        /// Do not ask for confirmation.
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Eject the medium of a removable drive (Zip, Jaz, SuperDisk, MO, CD). Needs
+    /// administrator rights (root on Linux).
+    Eject {
+        /// Drive path from `s0 drives`.
+        drive: String,
     },
     /// Save the El Torito boot image of an ISO to a file.
     BootImage {
@@ -763,9 +797,72 @@ fn run(cli: Cli) -> Result<()> {
                 if r.verified { ", verified" } else { "" }
             );
         }
+        Cmd::WipeDrive {
+            drive,
+            random,
+            no_verify,
+            allow_fixed,
+            yes,
+        } => {
+            let info = drive_info(&drive)
+                .context("cannot list drives")?
+                .with_context(|| format!("{drive} is not a drive (see s0 drives)"))?;
+            if !yes
+                && !info.system
+                && !confirm(&format!(
+                    "This erases everything on {}, partitions included.",
+                    info.describe()
+                ))?
+            {
+                bail!("cancelled");
+            }
+            let mut bar = Progress::new(json);
+            let mut phase = String::new();
+            let r = wipe_drive(
+                &drive,
+                &DriveWipeOptions {
+                    pattern: if random {
+                        WipePattern::Random
+                    } else {
+                        WipePattern::Zero
+                    },
+                    verify: !no_verify,
+                    allow_fixed,
+                },
+                &mut |p, done, total| {
+                    if p != phase {
+                        bar.done();
+                        phase = p.to_string();
+                    }
+                    bar.show(p, done, total)
+                },
+            )
+            .with_context(|| format!("cannot wipe {drive}"));
+            bar.done();
+            let r = r?;
+            if json {
+                return print_json(&r);
+            }
+            println!(
+                "wiped {} bytes on {}{}",
+                r.bytes,
+                r.drive.describe(),
+                if r.verified { ", verified" } else { "" }
+            );
+        }
+        Cmd::Eject { drive } => {
+            sectorzero_core::eject_drive(&drive)
+                .with_context(|| format!("cannot eject {drive}"))?;
+            if !json {
+                println!("ejected {drive}");
+            }
+        }
         Cmd::Formats => {
             if json {
-                return print_json(&FLOPPY_FORMATS);
+                return print_json(&serde_json::json!({
+                    "floppy": FLOPPY_FORMATS,
+                    "media": MEDIA_FORMATS,
+                }));
             }
             println!(
                 "{:<8} {:>10}  {:>7}  {:>4}  description",
@@ -779,6 +876,20 @@ fn run(cli: Cli) -> Result<()> {
                     f.bytes_per_cluster,
                     f.root_entries,
                     f.name
+                );
+            }
+            println!("\n{:<8} {:>13}  {:>6}  layout", "id", "bytes", "sector");
+            for m in MEDIA_FORMATS {
+                println!(
+                    "{:<8} {:>13}  {:>6}  {:<22} {}",
+                    m.id,
+                    m.size_bytes(),
+                    m.sector_size,
+                    match m.layout {
+                        MediaLayout::Superfloppy => "no partition table".to_string(),
+                        MediaLayout::Mbr { slot, start } => format!("MBR slot {slot} at {start}"),
+                    },
+                    m.name
                 );
             }
         }
@@ -820,7 +931,9 @@ fn run(cli: Cli) -> Result<()> {
                 "created {} ({}, {}, {} bytes free)",
                 image.display(),
                 info.container.kind.name(),
-                info.floppy_format.unwrap_or(&info.fs_type),
+                info.floppy_format
+                    .or(info.media_format)
+                    .unwrap_or(&info.fs_type),
                 info.free_bytes
             );
         }
@@ -1120,7 +1233,50 @@ fn run(cli: Cli) -> Result<()> {
                 println!("moved         {} clusters", r.moved_clusters);
             }
         }
-        Cmd::Resize { img, spec } => {
+        Cmd::Resize {
+            img,
+            spec,
+            keep_partitions,
+        } => {
+            let partitioned = matches!(
+                sectorzero_core::probe(&img.image)
+                    .with_context(|| format!("cannot open {}", img.image.display()))?
+                    .1,
+                Layout::Mbr(_) | Layout::Gpt(_)
+            );
+            if partitioned {
+                let size = match (
+                    &spec.size,
+                    &spec.format,
+                    spec.like.is_some() || spec.geo.any(),
+                ) {
+                    (Some(s), None, false) => parse_size(s)?,
+                    _ => bail!(
+                        "{} is a partitioned disk: give its new size with --size",
+                        img.image.display()
+                    ),
+                };
+                let r = Volume::resize_disk(&img.image, &img.opts(true), size, !keep_partitions)
+                    .with_context(|| format!("cannot resize {}", img.image.display()))?;
+                if json {
+                    return print_json(&r);
+                }
+                print!(
+                    "resized the disk from {} to {} bytes",
+                    r.old_size, r.new_size
+                );
+                match (&r.partition, &r.stats) {
+                    (Some(p), Some(s)) => println!(
+                        "; partition {} from {} to {} bytes, rebuilt with {} file(s), {} folder(s)",
+                        p.index, p.old_bytes, p.new_bytes, s.files, s.dirs
+                    ),
+                    _ => println!("; partitions unchanged"),
+                }
+                return Ok(());
+            }
+            if keep_partitions {
+                bail!("--keep-partitions only applies to partitioned (MBR/GPT) disks");
+            }
             let s = Volume::change_format(&img.image, &img.opts(true), spec.spec()?)
                 .with_context(|| format!("cannot change the format of {}", img.image.display()))?;
             let info = open(&img, false)?.info()?;
@@ -1129,7 +1285,9 @@ fn run(cli: Cli) -> Result<()> {
             }
             println!(
                 "rebuilt as {} with {} file(s), {} folder(s); {} bytes free",
-                info.floppy_format.unwrap_or(&info.fs_type),
+                info.floppy_format
+                    .or(info.media_format)
+                    .unwrap_or(&info.fs_type),
                 s.files,
                 s.dirs,
                 info.free_bytes
@@ -1429,7 +1587,7 @@ fn print_volume(i: &VolumeInfo) {
     if let Some(why) = &i.read_only_reason {
         println!("read-only    {why}");
     }
-    if let Some(f) = i.floppy_format {
+    if let Some(f) = i.floppy_format.or(i.media_format) {
         println!("format       {f}");
     }
     println!(
