@@ -382,3 +382,89 @@ Translations (2026-11-24): engine messages and the CLI are translated into the d
 languages (`crates/sectorzero-i18n`). Keys are the English format strings; engine errors are
 matched against them at display time (a message that fits a key in more than one way stays
 English), and the CLI formats its own text through `t!`.
+
+Compressed images (2026-11-24, `container/compressed.rs`): `.gz`, `.xz`, `.zst`, `.bz2`, and
+`.zip` / `.7z` archives holding one image. They are recognised by signature (a `.zip` is opened
+this way unless it holds encrypted members or a `.wil` list, which stay with the IMZ/WLZ code).
+The image is unpacked into a temporary folder (`SECTORZERO_TMPDIR`, else the system's) and
+opened as whatever it is, so `disk.vhd.gz` is a VHD. Saving recompresses to a temporary file
+next to the original and swaps it in. Other `.zip` members are copied unchanged, and so is the
+archive comment. A `.7z` that holds other files too opens read-only. New files take the kind of
+the inner name (`s0 new disk.vhd.xz`), and xz is written multi-threaded in 16 MiB blocks.
+Members that are documentation or checksums (`.txt`, `.md`, `.sha256`, …) are skipped when
+choosing the image; `--member` picks another. Random access would need an index (BGZF,
+seekable zstd, xz blocks); unpacking keeps it simple, at the cost of temporary disk space.
+Checked: gzip, xz, bzip2, unzip, libarchive (Windows `tar`, for .7z) and Node's zstd read
+SectorZero's files, and SectorZero reads theirs (multi-member gzip, multi-block xz). QCOW2
+images with zstd clusters (compression type 1) now open too; `qemu-img`'s read byte for byte,
+and still pass `qemu-img check` after SectorZero writes to them.
+
+Snapshot chains (2026-11-24). Differencing VHDX (`.avhdx`, Hyper-V checkpoints), VMDK snapshots
+and differencing VDI open, write and, for VHDX and VMDK, are created by `s0 diff`. All three
+follow the parent chain through `open_parent` (at most 32 levels, so a loop is an error, not a
+hang) and copy a block or grain up into the child before its first write. Linkage checks keep a
+child from being read over a parent that changed after it was made: VHDX compares the
+parent_linkage of the parent locator with the parent's DataWriteGuid, VMDK compares parentCID
+with the parent's CID, VDI compares the parent UUID with the parent's creation UUID. A VHDX
+block that is only partly present is read through its sector bitmap; VMDK grain table entry 1
+reads as zeros (not from the parent). The parent is looked for by the stored relative path,
+then the absolute one; a VDI parent by UUID next to the child, in the folder above (VirtualBox
+keeps snapshots in `Snapshots/`), and in `.vbox` HardDisk locations. Stream-optimized VMDK
+(grains as zlib-compressed markers, footer near the end) opens read-only, and an `.ova` is a
+tar archive whose disk opens through the compressed-image code. Sources: Microsoft's VHDX
+specification ([MS-VHDX]), VMware's "Virtual Disk Format 1.1" and the published description
+of the VDI 1.1 header; no VirtualBox or QEMU code was read. Checked: `qemu-img` and `qemu-io` read
+and write VMDK snapshots in both directions, also two levels deep. There is no local Hyper-V
+or VirtualBox to check differencing VHDX and VDI against yet.
+
+Windows Backup system images (2026-11-24, `container/winbackup.rs`). `wbadmin` and the Windows 7
+"Backup and Restore" tool write a `WindowsImageBackup\<PC>\Backup <date>` folder holding one
+VHDX (older versions VHD) per backed-up volume, named by GUID, plus XML catalogs. A folder that
+looks like this opens as its disks: the drive or folder holding `WindowsImageBackup`, that folder,
+the computer's folder or one backup folder. The default is the largest disk (by virtual size) of
+the newest backup; the rest are members (`PC/Backup …/{GUID}.vhdx`), picked by number, full
+label or file name. Backups open read-only, because the catalogs record them.
+
+Macrium Reflect X images (2026-11-24, `container/mrimgx.rs`). Macrium publishes the `.mrimgx`
+layout and an MIT-licensed reference reader (github.com/macrium/mrimgx_file_layout); older
+`.mrimg` files (Reflect 8 and before) are a different, unpublished format. A 20-byte footer
+(u64 offset, "MACRIUM_FILE") leads to 32-byte metadata block headers (name, u32 length, MD5
+of the stored bytes, flags: last of its group, zstd, AES-ECB). `$JSON` describes the disks
+and partitions; at `index_file_position` each disk has a group ending in `$TRACK0` (the disk
+up to its first partition) and maybe `$EPT` (extended partition boot records, 528-byte
+records because the reference struct is not packed), then each partition a group ending in
+`$INDEX`: an i32 count of 4 MiB FAT reserved-sector pieces and their records, then an i32
+count and packed 30-byte records (i64 position, MD5 of the decoded block, u32 stored length,
+u16 file number), or 34-byte delta records with the block number they replace. Block `i`
+belongs at `start + (lcn0_offset - fs.start) + i * block_size`; records of length 0 are
+blocks that were not imaged. The reference restore adds `start` as bytes although the schema
+calls it a sector, so the reader takes bytes unless the partition table in `$TRACK0` says the
+value is an LBA. The image opens as the whole disk (`disk_size`), with the unimaged space as
+zeros. Incrementals are resolved like the reference: files in the same folder with the same
+image ID and an increment number up to the opened one, newest first; a delta index is laid
+over the newest full index. Encryption: PBKDF2-HMAC-SHA256 over the password, salt = SHA-256
+of the 8-byte image ID, `key_iterations` rounds; the stored `hmac` is HMAC-SHA256 of an empty
+message under that key; data blocks are AES-CBC with IV = AES-256-ECB(SHA-256(key), image ID,
+disk number, partition number, block number), with the zstd frame padded to 16 bytes.
+Checked only against images built in the tests from this description so far; Macrium's
+sample image (`demo/demo.zip` in that repository) has not been tried yet.
+
+Clonezilla and Rescuezilla (2026-11-24, `container/clonezilla.rs`, `container/partclone.rs`).
+An image is a folder: `parts` and (whole-disk backups) `disk` list the devices; per disk
+`sda-pt.sf` (sfdisk dump: partition starts and sizes, sector size, GPT `last-lba`),
+`sda-pt.parted`, `sda-mbr`, `sda-hidden-data-after-mbr`, `sda-gpt-1st` / `sda-gpt-2nd`; per
+partition one image split into `.aa`, `.ab`, … pieces, named by the tool and compressor
+(`sda1.ext4-ptcl-img.gz.aa`, `sda1.dd-img.zst.aa`, `sda1.ntfs-img.*` from ntfsclone,
+`sda1.aa` from partimage), and `sda4-ebr` for an extended partition's boot record. The disk
+is put back together like a restore: MBR, the gap after it and the first GPT copy at the
+start, the backup GPT at the end, each partition at its sfdisk offset. The disk size comes
+from the GPT header's backup LBA, else `pt.parted`, else `last-lba`. Compression is found
+by signature (the name says it too); pieces are joined and a compressed partition is unpacked
+to a temporary file on its first read. Partclone format, from partclone's IMAGE_FORMATS.md:
+0001 has a 4160-byte header, a byte per block, `BiTmAgIc`, and a CRC32 after each block;
+0002 a 110-byte header (0xC0DE endianness mark, checksum mode/size, blocks per checksum), a
+bit per block plus a CRC32, then the used blocks with a checksum after every N. The bit order
+of the 0002 bitmap is not documented; least significant bit first is assumed. Checked only
+against images built in the tests from those descriptions; no real Clonezilla backup or
+partclone binary has been tried (the test guest's ISO has neither). ntfsclone and partimage
+have no published description; they wait for a black-box oracle.

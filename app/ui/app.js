@@ -11,8 +11,8 @@ const dialog = {
 };
 const { getCurrentWebview } = window.__TAURI__.webview;
 
-const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk', 'imz', 'wlz', 'vhd', 'vud', 'vhdx', 'vmdk', 'vdi', 'qcow2', '001',
-  'nhd', 'hdi', 'fdi', 'iso', 'cue', 'bin', 'nrg', 'mds', 'mdf'];
+const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk', 'imz', 'wlz', 'vhd', 'vud', 'avhd', 'vhdx', 'avhdx', 'vmdk', 'vdi', 'qcow2', '001',
+  'nhd', 'hdi', 'fdi', 'iso', 'cue', 'bin', 'nrg', 'mds', 'mdf', 'gz', 'xz', 'zst', 'bz2', 'zip', '7z', 'ova', 'mrimgx'];
 const allFiles = () => ({ name: t('All files'), extensions: ['*'] });
 const imageFilters = () => [{ name: t('Disk images'), extensions: IMAGE_EXTS }, allFiles()];
 const CONTAINER_EXT = {
@@ -244,6 +244,11 @@ async function closeImage() {
 
 async function actionOpen() {
   const path = await dialog.open({ title: t('Open disk image'), multiple: false, filters: imageFilters() });
+  if (path) await openImage(path);
+}
+
+async function actionOpenDir() {
+  const path = await dialog.open({ title: t('Open backup folder'), directory: true, multiple: false });
   if (path) await openImage(path);
 }
 
@@ -685,9 +690,15 @@ async function actionBootImage() {
 }
 
 async function actionDiff() {
+  const kind = state.image.info.container.kind;
+  const filters = {
+    vhdx: [{ name: t('Differencing VHDX'), extensions: ['vhdx', 'avhdx'] }],
+    vmdk: [{ name: t('VMDK snapshot'), extensions: ['vmdk'] }],
+    vhd: [{ name: t('Differencing VHD'), extensions: ['vhd'] }, { name: t('Virtual PC undo disk'), extensions: ['vud'] }],
+  }[kind];
   const dest = await dialog.save({
-    title: t('Create a differencing disk'), defaultPath: `${stem(state.image.name)}-changes.vhd`,
-    filters: [{ name: t('Differencing VHD'), extensions: ['vhd'] }, { name: t('Virtual PC undo disk'), extensions: ['vud'] }],
+    title: t('Create a differencing disk'), defaultPath: `${stem(state.image.name)}-changes.${filters[0].extensions[0]}`,
+    filters,
   });
   if (!dest) return;
   state.image = await invoke('make_differencing', { dest });
@@ -715,6 +726,7 @@ async function actionInfo() {
   if (c.comment) rows.push([t('Comment'), c.comment]);
   if (c.encrypted) rows.push([t('Encryption'), t('Password (AES)')]);
   if (c.parent) rows.push([t('Parent'), c.parent]);
+  if (c.compression) rows.push([t('Compression'), c.compression]);
   if (i.iso) {
     rows.push([t('Volume ID'), i.label || none]);
     if (i.iso.application) rows.push([t('Application'), i.iso.application]);
@@ -1133,7 +1145,7 @@ function updateButtons() {
   document.querySelectorAll('[data-needs-writable]').forEach((b) => { b.disabled = !writable() || state.busy; });
   document.querySelectorAll('[data-needs-selection]').forEach((b) => { b.disabled ||= state.selected.size === 0; });
   $('btnRename').disabled ||= state.selected.size !== 1;
-  for (const id of ['btnNew', 'btnOpen', 'btnDrives', 'btnIso']) $(id).disabled = state.busy;
+  for (const id of ['btnNew', 'btnOpen', 'btnOpenDir', 'btnDrives', 'btnIso']) $(id).disabled = state.busy;
   const iso = has && state.image.info.iso;
   $('btnBootImage').hidden = !iso;
   for (const id of ['btnLabel', 'btnBoot', 'btnDefrag', 'btnFormat']) $(id).hidden = !!iso;
@@ -1142,9 +1154,10 @@ function updateButtons() {
   $('mnuIsoReplace').hidden = !iso;
   $('mnuIsoReplace').disabled = !(sel.length === 1 && !sel[0].is_dir);
   $('mnuTruncate').hidden = !!iso;
-  $('mnuDiff').disabled = !(has && state.image.info.container.kind === 'vhd');
+  $('mnuDiff').disabled = !(has && ['vhd', 'vhdx', 'vmdk'].includes(state.image.info.container.kind)
+    && !state.image.info.container.compression);
   $('mnuPassword').disabled = !(writable() && ['imz', 'wlz'].includes(state.image.info.container.kind));
-  $('mnuTruncate').disabled = !(writable() && state.image.info.container.kind === 'raw'
+  $('mnuTruncate').disabled = !(writable() && state.image.info.container.kind === 'raw' && !state.image.info.container.compression
     && state.image.info.layout.kind === 'BareVolume');
   $('partSel').disabled = state.busy;
   $('forksWrap').hidden = !isHfs();
@@ -1270,6 +1283,7 @@ function select(idx, ev) {
 
 $('btnNew').onclick = () => run(actionNew);
 $('btnOpen').onclick = () => run(actionOpen);
+$('btnOpenDir').onclick = () => run(actionOpenDir);
 $('btnDrives').onclick = () => run(actionDrives);
 $('btnClose').onclick = () => run(closeImage);
 $('btnInject').onclick = () => run(actionInject);

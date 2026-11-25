@@ -357,7 +357,7 @@ pub struct TruncateReport {
 /// "truncate unused space"). SectorZero and WinImage read such images as zero-padded.
 pub fn truncate_image(path: &Path) -> Result<TruncateReport> {
     let img = Image::open(path, &OpenOptions::default())?;
-    if img.container().kind != ContainerKind::Raw {
+    if img.container().kind != ContainerKind::Raw || img.container().compression.is_some() {
         return Err(Error::Unsupported(
             "truncating this container (raw images only; IMZ/VHD/VMDK store free space compactly already)"
                 .into(),

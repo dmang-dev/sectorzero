@@ -37,13 +37,19 @@ Windows first. Linux builds come from CI; macOS and other platforms come later.
 | WinImage IMZ | `.imz` | ✅ | ✅ | ✅ | ✅ | Optional password (AES-128): open, create, set, change or remove |
 | WLZ (several images in one zip) | `.wlz` | ✅ | ❌ | ✅ | ❌ | Optional password; `--member` picks the image |
 | VHD (Virtual PC, Hyper-V) | `.vhd` `.vud` | ✅ | ✅ | ✅ | ✅ | Fixed, dynamic and differencing (new ones with `s0 diff`); Virtual PC undo disks |
-| VHDX (Hyper-V) | `.vhdx` | ✅ | ✅ | ✅ | ✅ | Fixed and dynamic; differencing VHDX ❌ |
-| VMDK (VMware) | `.vmdk` | ✅ | ✅ | ✅ | ✅ | Monolithic sparse and flat, descriptor + extents; stream-optimized and snapshots ❌ |
-| VDI (VirtualBox) | `.vdi` | ✅ | ✅ | ✅ | ✅ | Fixed and dynamic; differencing VDI ❌ |
-| QCOW2 (QEMU) | `.qcow2` | ✅ | ✅ | ⚠️ | ✅ | v2/v3, compressed clusters, backing files; encrypted, snapshotted or zstd images open read-only |
+| VHDX (Hyper-V) | `.vhdx` `.avhdx` | ✅ | ✅ | ✅ | ✅ | Fixed, dynamic and differencing (Hyper-V checkpoints, new ones with `s0 diff`); the whole parent chain is followed |
+| VMDK (VMware) | `.vmdk` | ✅ | ✅ | ✅ | ✅ | Monolithic sparse and flat, descriptor + extents, snapshots (new ones with `s0 diff`); stream-optimized ones open read-only |
+| VDI (VirtualBox) | `.vdi` | ✅ | ✅ | ✅ | ✅ | Fixed, dynamic and differencing (snapshots; the parent is found by UUID next to it, in the folder above or through the `.vbox` file) |
+| QCOW2 (QEMU) | `.qcow2` | ✅ | ✅ | ⚠️ | ✅ | v2/v3, deflate and zstd compressed clusters, backing files; images with internal snapshots open read-only; encrypted ones ❌ |
 | PC-98 | `.nhd` `.hdi` `.fdi` | ✅ | ✅ | ✅ | ✅ | |
 | ISO 9660 CD/DVD | `.iso` | ✅ | ✅ | ⚠️ | ❌ | Built from a folder, optionally bootable (BIOS or UEFI); a file can be replaced in place if the new one fits |
 | CD images | `.cue` + `.bin`, `.nrg`, `.mds` + `.mdf` | ✅ | ❌ | ❌ | ❌ | MODE1/MODE2, 2048–2448-byte sectors |
+| OVA (virtual appliance) | `.ova` | ✅ | ❌ | ❌ | ❌ | The disk inside opens (usually a stream-optimized VMDK); `--member` picks one of several |
+| Windows Backup system image | a `WindowsImageBackup` folder | ✅ | ❌ | ❌ | ❌ | Open the drive, the `WindowsImageBackup` folder or a backup folder; the system disk of the newest backup by default, `--member` picks another disk or backup |
+| Macrium Reflect X backup | `.mrimgx` | ✅ | ❌ | ❌ | ❌ | Full, incremental and differential images (the rest of the backup set is found in the same folder), zstd-compressed and password-encrypted ones; `--member` picks a disk of a multi-disk image. Images from Reflect 8 and older (`.mrimg`) ❌ |
+| Clonezilla / Rescuezilla image | the image folder | ✅ | ❌ | ❌ | ❌ | Whole-disk backups open as the disk (MBR or GPT, put back together from the saved tables), partition backups as the partition; partclone images, compressed (gzip, zstd, xz, bzip2) and split (`.aa`, `.ab`, …); `--member` picks a disk or partition. ntfsclone and partimage images (old backups), lz4 and lzop ❌ |
+| Partclone image | `.ptcl-img`, `-ptcl-img.gz.aa`, … | ✅ | ❌ | ❌ | ❌ | Formats 0001 and 0002, a single piece (split ones open through the Clonezilla folder) |
+| Compressed images | `.gz` `.xz` `.zst` `.bz2`, or a `.zip` / `.7z` holding the image | ✅ | ✅ | ✅ | ✅ | Any format above inside (`disk.img.xz`, `disk.vhd.gz`, a Raspberry Pi `.zip`); unpacked to a temporary folder while open; a `.7z` that holds other files too opens read-only |
 
 "Save as" means another image can be converted to this format; every format that opens can be
 converted from.
@@ -130,9 +136,15 @@ language. Catalogs live in `app/ui/locales/` (checked by `node app/i18n-check.mj
   byte-identical files, and SectorZero reads the SDK's VHD and VMDK output. That tool opens
   SectorZero's password-encrypted IMZ images, and SectorZero opens the ones it encrypted.
 - **ISO:** Windows mounts SectorZero's ISO images.
+- **Compressed images:** gzip, xz, bzip2, unzip, libarchive (Windows `tar`) and Node's zstd
+  read SectorZero's files, and SectorZero reads theirs (multi-member gzip, multi-block xz).
+  QCOW2 images with zstd clusters made by `qemu-img` read byte for byte and pass `qemu-img check`
+  after writing.
 - **Physical drives:** checked on real block devices under Linux (floppy drive, USB stick, disk)
   and on Windows with VHDs attached as disks (write, verify, read back, drive-to-drive copy, wipe).
-- **VHDX** is checked by this project's own tests only so far.
+- **Snapshots:** `qemu-img` and `qemu-io` read VMDK snapshots made here, and SectorZero reads theirs
+  (two-level chains, partial grains, stream-optimized VMDK). Differencing VHDX and VDI and
+  Windows Backup folders are checked by this project's own tests only so far, as is VHDX.
 
 **Not yet** (see RESEARCH.md §5): low-level floppy formatting, writing to NTFS, writing to ISO
 images beyond in-place replacement, resizing non-FAT partitions.
@@ -231,6 +243,9 @@ s0 resize disk.vhd -s 2G                     # MBR/GPT disk: the last FAT partit
 s0 convert boot.ima boot.vhdx                # container from the extension, or -c raw|imz|vhd|vhdx|vmdk|vdi|qcow2|nhd|hdi|fdi
 s0 convert game.cue game.iso                 # CD images (BIN/CUE, NRG, MDS/MDF) to plain ISO
 s0 diff base.vhd changes.vud                 # differencing / undo disk; writes go to the new file only
+s0 diff base.vhdx snap.avhdx                 # also VHDX over VHDX and VMDK snapshots over VMDK
+s0 ls E:\WindowsImageBackup -r              # a Windows Backup system image; --member picks the disk
+s0 convert disk.img.xz disk.vhdx             # compressed images (.gz .xz .zst .bz2 .zip .7z) open directly
 s0 drives                                    # physical drives (as administrator / root to open them)
 s0 convert \\.\PhysicalDrive2 stick.vhdx      # read a whole drive into an image, with progress
 s0 write-drive stick.vhdx \\.\PhysicalDrive2  # write an image onto a drive and verify it (--allow-fixed for hard disks)

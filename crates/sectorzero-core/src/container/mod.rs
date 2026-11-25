@@ -5,6 +5,10 @@
 //! `window` and `volume`).
 
 mod cd;
+mod clonezilla;
+mod compressed;
+mod mrimgx;
+mod partclone;
 mod pc98;
 mod qcow2;
 pub(crate) mod raw;
@@ -14,6 +18,7 @@ mod vhd;
 mod vhdx;
 mod vmdk;
 mod wicrypt;
+mod winbackup;
 mod zip;
 
 use std::fs::File;
@@ -148,6 +153,12 @@ pub enum ContainerKind {
     Nrg,
     /// Alcohol 120% CD image: MDS descriptor + MDF data (read-only).
     Mds,
+    /// Macrium Reflect X backup image (read-only).
+    Mrimgx,
+    /// A partclone partition image (read-only).
+    Partclone,
+    /// A Clonezilla / Rescuezilla image folder (read-only).
+    Clonezilla,
     /// A physical drive (USB stick, memory card, floppy drive, hard disk), read and written
     /// sector for sector.
     Drive,
@@ -155,7 +166,14 @@ pub enum ContainerKind {
 
 impl ContainerKind {
     /// Container implied by a file extension (for new files).
+    /// A compressed name (`disk.vhd.gz`, `disk.zip`) gives the kind inside it.
     pub fn from_path(path: &Path) -> ContainerKind {
+        if compressed::Codec::from_ext(path).is_some() {
+            return match path.file_stem() {
+                Some(stem) => ContainerKind::from_path(Path::new(stem)),
+                None => ContainerKind::Raw,
+            };
+        }
         let ext = path
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
@@ -163,8 +181,8 @@ impl ContainerKind {
         match ext.as_str() {
             "imz" => ContainerKind::Imz,
             "wlz" => ContainerKind::Wlz,
-            "vhd" | "vud" => ContainerKind::Vhd,
-            "vhdx" => ContainerKind::Vhdx,
+            "vhd" | "vud" | "avhd" => ContainerKind::Vhd,
+            "vhdx" | "avhdx" => ContainerKind::Vhdx,
             "vmdk" => ContainerKind::Vmdk,
             "vdi" => ContainerKind::Vdi,
             "qcow2" => ContainerKind::Qcow2,
@@ -175,6 +193,7 @@ impl ContainerKind {
             "cue" => ContainerKind::Cue,
             "nrg" => ContainerKind::Nrg,
             "mds" | "mdf" => ContainerKind::Mds,
+            "mrimgx" => ContainerKind::Mrimgx,
             _ => ContainerKind::Raw,
         }
     }
@@ -196,6 +215,9 @@ impl ContainerKind {
             ContainerKind::Cue => "CD image (BIN/CUE)",
             ContainerKind::Nrg => "Nero CD image (NRG)",
             ContainerKind::Mds => "Alcohol 120% CD image (MDF/MDS)",
+            ContainerKind::Mrimgx => "Macrium Reflect X image (MRIMGX)",
+            ContainerKind::Partclone => "Partclone image",
+            ContainerKind::Clonezilla => "Clonezilla image",
             ContainerKind::Drive => "Physical drive",
         }
     }
@@ -217,6 +239,9 @@ impl ContainerKind {
                 | ContainerKind::Cue
                 | ContainerKind::Nrg
                 | ContainerKind::Mds
+                | ContainerKind::Mrimgx
+                | ContainerKind::Partclone
+                | ContainerKind::Clonezilla
                 | ContainerKind::Drive
         )
     }
@@ -237,6 +262,9 @@ pub struct ContainerInfo {
     pub parent: Option<String>,
     /// IMZ/WLZ: the image is stored password-encrypted.
     pub encrypted: bool,
+    /// The image file is compressed or archived around this container: "gzip", "xz",
+    /// "zstd", "bzip2", "zip" or "7z".
+    pub compression: Option<String>,
 }
 
 impl ContainerInfo {
@@ -250,6 +278,7 @@ impl ContainerInfo {
             comment: None,
             encrypted: false,
             parent: None,
+            compression: None,
         }
     }
 }
@@ -284,6 +313,18 @@ pub(crate) fn open(path: &Path, writable: bool, member: Option<&str>) -> Result<
     if crate::device::is_device_path(path) {
         return Ok(Box::new(crate::device::open(path, writable)?));
     }
+    if path.is_dir() {
+        if winbackup::looks_like_backup(path) {
+            return Ok(Box::new(winbackup::WinBackupDisk::open(path, member)?));
+        }
+        if clonezilla::looks_like_clonezilla(path) {
+            return Ok(Box::new(clonezilla::ClonezillaDisk::open(path, member)?));
+        }
+        return Err(Error::Invalid(format!(
+            "{} is a folder, not a disk image (folders open only when they hold a Windows backup or a Clonezilla image)",
+            path.display()
+        )));
+    }
     let mut file = File::open(path)?;
     let len = file_len(&mut file)?;
     let mut head = [0u8; 4096];
@@ -295,16 +336,44 @@ pub(crate) fn open(path: &Path, writable: bool, member: Option<&str>) -> Result<
     }
     drop(file);
 
-    if member.is_some() && !head.starts_with(b"PK\x03\x04") {
+    let codec = compressed::Codec::from_magic(head);
+    let macrium = len >= 512 && mrimgx::looks_like_mrimgx(&tail);
+    if member.is_some()
+        && !head.starts_with(b"PK\x03\x04")
+        && codec != Some(compressed::Codec::SevenZip)
+        && !macrium
+    {
         return Err(Error::Invalid(
-            "--member only applies to IMZ/WLZ archives".into(),
+            "--member only applies to archives (IMZ, WLZ, ZIP, 7z)".into(),
         ));
+    }
+    if macrium {
+        return Ok(Box::new(mrimgx::MrimgxDisk::open(path, member)?));
     }
     if split::is_split_set(path) {
         return Ok(Box::new(split::SplitDisk::open(path, writable)?));
     }
+    if let Some(codec) = codec {
+        return Ok(Box::new(compressed::CompressedDisk::open(
+            path, codec, writable, member,
+        )?));
+    }
+    if head.starts_with(b"PK\x03\x04")
+        && compressed::Codec::from_ext(path) == Some(compressed::Codec::Zip)
+        && !compressed::zip_wants_imz(path)
+    {
+        return Ok(Box::new(compressed::CompressedDisk::open(
+            path,
+            compressed::Codec::Zip,
+            writable,
+            member,
+        )?));
+    }
     if head.starts_with(b"PK\x03\x04") {
         return Ok(Box::new(zip::ZipDisk::open(path, writable, member)?));
+    }
+    if partclone::looks_like_partclone(head) {
+        return Ok(Box::new(partclone::PartcloneDisk::open(path)?));
     }
     if head.starts_with(b"vhdxfile") {
         return Ok(Box::new(vhdx::VhdxDisk::open(path, writable)?));
@@ -358,6 +427,25 @@ pub(crate) fn open(path: &Path, writable: bool, member: Option<&str>) -> Result<
     Ok(Box::new(raw::RawDisk::open(path, writable)?))
 }
 
+thread_local! {
+    static PARENT_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Open the parent of a differencing disk or snapshot (any container this crate reads),
+/// read-only. Chains deeper than 32 disks (or loops) are refused.
+pub(crate) fn open_parent(path: &Path) -> Result<Box<dyn Disk>> {
+    let depth = PARENT_DEPTH.get();
+    if depth >= 32 {
+        return Err(Error::Invalid(
+            "differencing disk chain is too long (or loops)".into(),
+        ));
+    }
+    PARENT_DEPTH.set(depth + 1);
+    let opened = open(path, false, None);
+    PARENT_DEPTH.set(depth);
+    opened.map_err(|e| Error::Invalid(format!("parent disk {}: {e}", path.display())))
+}
+
 /// Create a new, zero-filled container of `size` bytes.
 pub(crate) fn create(
     path: &Path,
@@ -373,6 +461,13 @@ pub(crate) fn create(
         return Err(Error::Invalid(
             "disk size must be a non-zero multiple of 512 bytes".into(),
         ));
+    }
+    if let Some(codec) = compressed::Codec::from_ext(path)
+        && !(codec == compressed::Codec::Zip && kind == ContainerKind::Imz)
+    {
+        return Ok(Box::new(compressed::CompressedDisk::create(
+            path, codec, kind, size, dynamic,
+        )?));
     }
     Ok(match kind {
         ContainerKind::Raw => Box::new(raw::RawDisk::create(path, size)?),
@@ -400,6 +495,17 @@ pub(crate) fn create(
                 "creating {} files (CD images are read-only; build an ISO instead)",
                 kind.name()
             )));
+        }
+        ContainerKind::Mrimgx => {
+            return Err(Error::Unsupported(
+                "creating Macrium Reflect images (convert to another format instead)".into(),
+            ));
+        }
+        ContainerKind::Partclone | ContainerKind::Clonezilla => {
+            return Err(Error::Unsupported(
+                "creating partclone or Clonezilla images (convert to another format instead)"
+                    .into(),
+            ));
         }
         ContainerKind::Drive => {
             return Err(Error::Unsupported(
@@ -439,6 +545,10 @@ pub(crate) fn create_like(
             "rebuilding a differencing VHD in place (convert it to a standalone image first)"
                 .into(),
         )),
+        _ if like.parent.is_some() => Err(Error::Unsupported(
+            "rebuilding a differencing disk or snapshot in place (convert it to a standalone image first)"
+                .into(),
+        )),
         ContainerKind::Vmdk if !dynamic => Err(Error::Unsupported(format!(
             "rebuilding a {} VMDK in place (convert it to a single-file format first)",
             like.variant
@@ -447,9 +557,10 @@ pub(crate) fn create_like(
     }
 }
 
-/// Create an empty differencing VHD at `path` over the VHD `parent` (fixed, dynamic or
-/// itself differencing). Reads of unwritten sectors come from the parent; writes go to the
-/// new child only. Use a `.vhd` or `.vud` (Virtual PC undo disk) name.
+/// Create an empty differencing disk at `path` over `parent`: a VHD (`.vhd`, or `.vud` for a
+/// Virtual PC undo disk) over any VHD, a VHDX (`.vhdx`, `.avhdx`) over a VHDX, or a VMDK
+/// snapshot (`.vmdk`) over a VMDK. Reads of
+/// unwritten sectors come from the parent; writes go to the new child only.
 pub fn create_differencing(path: &Path, parent: &Path, overwrite: bool) -> Result<ContainerInfo> {
     if !overwrite && path.exists() {
         return Err(Error::Exists(path.display().to_string()));
@@ -459,7 +570,11 @@ pub fn create_differencing(path: &Path, parent: &Path, overwrite: bool) -> Resul
             "the differencing disk cannot replace its own parent".into(),
         ));
     }
-    let mut disk = vhd::VhdDisk::create_differencing(path, parent)?;
+    let mut disk: Box<dyn Disk> = match ContainerKind::from_path(path) {
+        ContainerKind::Vhdx => Box::new(vhdx::VhdxDisk::create_differencing(path, parent)?),
+        ContainerKind::Vmdk => Box::new(vmdk::VmdkDisk::create_differencing(path, parent)?),
+        _ => Box::new(vhd::VhdDisk::create_differencing(path, parent)?),
+    };
     disk.sync()?;
     Ok(disk.info())
 }

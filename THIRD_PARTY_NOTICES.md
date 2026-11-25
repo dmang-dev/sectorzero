@@ -13,11 +13,22 @@ or shipped with the program.
 
 ## Ported or adapted code
 
-None. Containers, partition tables, FAT tools (defrag, boot sector, resize), ISO 9660 and
+- **Macrium Reflect X file layout** (https://github.com/macrium/mrimgx_file_layout), MIT,
+  Copyright (c) 2024 Paramount Software UK Limited. `crates/sectorzero-core/src/container/mrimgx.rs`
+  follows its documentation (`docs/FILE_LAYOUT.md`, `docs/ENCRYPTION.md`, the JSON schema) and
+  the reading steps of its reference reader and restore code (`src/libs/file_reader`,
+  `src/libs/restore`, `src/libs/encryption`): the footer and metadata block headers, the
+  packed block index records, delta indexes over the full image, where restored blocks go
+  on the disk, and the key derivation and IVs of encrypted images. The Rust code is new; no
+  C++ was copied. The MIT license asks that its copyright notice be kept with substantial
+  portions; it is repeated in that file's header.
+
+Otherwise none. Containers, partition tables, FAT tools (defrag, boot sector, resize), ISO 9660 and
 ext2/3/4 are written from the published specifications: Microsoft's FAT specification, the
 VHD and VHDX specifications (MS-VHDX), VMware's Virtual Disk Format 1.1, UEFI (GPT), ECMA-119
-(ISO 9660), Joliet, Rock Ridge (IEEE P1282), El Torito, and the ext4 on-disk layout in the
-Linux kernel documentation (Documentation/filesystems/ext4). No code from e2fsprogs or Linux
+(ISO 9660), Joliet, Rock Ridge (IEEE P1282), El Torito, the ext4 on-disk layout in the
+Linux kernel documentation (Documentation/filesystems/ext4), and partclone's description of
+its image formats (IMAGE_FORMATS.md; no partclone code was read or used). No code from e2fsprogs or Linux
 (both GPL) was used; Linux and e2fsck serve only as test oracles in a virtual machine. The WinImage SDK was used only as an external
 test oracle on a developer machine. None of it is in this repository or linked into the program.
 
@@ -44,7 +55,12 @@ and the files affected. Also keep the original copyright notice in those files.
 | [drag](https://github.com/crabnebula-dev/drag-rs) | Native drag of files out of the app window | MIT OR Apache-2.0 |
 | [md-5, sha1, sha2](https://github.com/RustCrypto/hashes) | Image and file checksums | MIT OR Apache-2.0 |
 | [adler2](https://github.com/oyvindln/adler2) | Adler-32 checksums | 0BSD OR MIT OR Apache-2.0 |
-| [flate2](https://github.com/rust-lang/flate2-rs) | Compressed QCOW2 clusters | MIT OR Apache-2.0 |
+| [flate2](https://github.com/rust-lang/flate2-rs) | Compressed QCOW2 clusters, .gz images | MIT OR Apache-2.0 |
+| [lzma-rust2](https://github.com/hasenbanck/lzma-rust2) | .xz images | Apache-2.0 |
+| [sevenz-rust2](https://github.com/hasenbanck/sevenz-rust2) | .7z archives holding an image | Apache-2.0 |
+| [zstd](https://github.com/gyscos/zstd-rs) (with the zstd C library) | .zst images, zstd QCOW2 clusters | BSD-3-Clause (zstd-sys: BSD-3-Clause AND BSD-2-Clause) |
+| [bzip2](https://github.com/trifectatechfoundation/bzip2-rs) (with libbz2-rs-sys) | .bz2 images | MIT OR Apache-2.0; bzip2-1.0.6 (libbz2-rs-sys) |
+| [aes](https://github.com/RustCrypto/block-ciphers) | Encrypted Macrium Reflect X images | MIT OR Apache-2.0 |
 | [ntfs](https://github.com/ColinFinck/ntfs) | Reading NTFS volumes | MIT OR Apache-2.0 |
 | [unicode-normalization](https://github.com/unicode-rs/unicode-normalization) | Composing and decomposing HFS+ names (NFC / NFD) | MIT OR Apache-2.0 |
 
@@ -58,6 +74,13 @@ and the files affected. Also keep the original copyright notice in those files.
   for this project by mkfs.ext4 (e2fsprogs 1.47.4, default options) in an Alpine Linux guest
   and filled with test files by the Linux kernel. It contains only that generated data, no
   e2fsprogs code.
+
+- `crates/sectorzero-core/tests/data/qemu-zstd.qcow2` is a 1.44 MB FAT12 floppy made by
+  SectorZero (one README.TXT), converted by `qemu-img convert -c -o compression_type=zstd`
+  (QEMU 11.1). It contains only that data, no QEMU code.
+- `crates/sectorzero-core/tests/data/qemu-stream.vmdk` is a 1.44 MB FAT12 floppy made by
+  SectorZero (one NOTE.TXT), converted by `qemu-img convert -O vmdk -o subformat=streamOptimized`
+  (QEMU 11.1). It contains only that data, no QEMU code.
 
 ## Transitive dependencies
 

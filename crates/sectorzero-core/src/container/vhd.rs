@@ -134,7 +134,7 @@ fn dynamic_header(size: u64, block_size: u32) -> ([u8; 1024], u32, u64, u64) {
     (h, entries, bat_offset, bat_bytes)
 }
 
-fn utf16_string(b: &[u8], big_endian: bool) -> String {
+pub(super) fn utf16_string(b: &[u8], big_endian: bool) -> String {
     let units: Vec<u16> = b
         .as_chunks::<2>()
         .0
@@ -151,7 +151,7 @@ fn utf16_string(b: &[u8], big_endian: bool) -> String {
     String::from_utf16_lossy(&units)
 }
 
-fn utf16_bytes(s: &str, big_endian: bool) -> Vec<u8> {
+pub(super) fn utf16_bytes(s: &str, big_endian: bool) -> Vec<u8> {
     s.encode_utf16()
         .flat_map(|u| {
             if big_endian {
@@ -229,7 +229,7 @@ fn parent_names(file: &mut File, h: &[u8]) -> io::Result<Vec<String>> {
 }
 
 /// A locator string as a host path, relative ones taken from the child's folder.
-fn resolve_name(child_dir: &Path, name: &str) -> PathBuf {
+pub(super) fn resolve_name(child_dir: &Path, name: &str) -> PathBuf {
     let native = if cfg!(windows) {
         name.to_string()
     } else {
@@ -278,7 +278,7 @@ fn component_key(c: &Component) -> String {
 
 /// `to` relative to the folder `from`, Windows style (`.\\parent.vhd`, `..\\base\\x.vhd`),
 /// or `None` when they are on different drives.
-fn relative_windows_path(from: &Path, to: &Path) -> Option<String> {
+pub(super) fn relative_windows_path(from: &Path, to: &Path) -> Option<String> {
     let a: Vec<Component> = from.components().collect();
     let b: Vec<Component> = to.components().collect();
     if a.first().map(component_key) != b.first().map(component_key) {
@@ -303,7 +303,7 @@ fn relative_windows_path(from: &Path, to: &Path) -> Option<String> {
     Some(parts.join("\\"))
 }
 
-fn windows_path_string(p: &Path) -> String {
+pub(super) fn windows_path_string(p: &Path) -> String {
     let s = p.to_string_lossy();
     let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
     if cfg!(windows) {

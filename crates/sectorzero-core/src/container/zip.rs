@@ -466,6 +466,7 @@ impl Disk for ZipDisk {
             comment: (!self.comment.is_empty()).then(|| self.comment.clone()),
             parent: None,
             encrypted: self.password.is_some(),
+            compression: None,
         }
     }
 

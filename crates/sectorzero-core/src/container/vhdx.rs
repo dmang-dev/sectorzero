@@ -1,11 +1,16 @@
-//! Microsoft VHDX (Virtual Hard Disk v2), fixed and dynamic, per the published
-//! [MS-VHDX] specification.
+//! Microsoft VHDX (Virtual Hard Disk v2), fixed, dynamic and differencing (Hyper-V
+//! checkpoints, `.avhdx`), per the published [MS-VHDX] specification.
 //!
 //! Layout: a 64 KiB file identifier, two 4 KiB headers (the valid one with the higher
 //! sequence number is current), two copies of the region table, the log, the metadata
 //! region and the block allocation table (BAT). Payload blocks are found through the BAT;
-//! every `chunk_ratio` payload entries are followed by one sector-bitmap entry (only used
-//! by differencing disks, which are not supported).
+//! every `chunk_ratio` payload entries are followed by one sector-bitmap entry.
+//!
+//! A differencing disk names its parent in a parent locator (relative and absolute paths)
+//! and records the parent's DataWriteGuid. Blocks it never wrote come from the parent;
+//! a partially present block says per sector, in its sector bitmap, which sectors it holds.
+//! Writing a block that is not fully present first copies the block's current contents
+//! into the child, so the block becomes fully present.
 //!
 //! We never write through the log. A pending log left by another tool is replayed first
 //! (into the file when opened writable, or as an in-memory overlay when read-only), and
@@ -13,9 +18,10 @@
 
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use super::{ContainerInfo, ContainerKind, Disk, read_up_to};
+use super::vhd::{relative_windows_path, resolve_name, windows_path_string};
+use super::{ContainerInfo, ContainerKind, Disk, open_parent, read_up_to};
 use crate::error::{Error, Result};
 use crate::util::*;
 
@@ -35,10 +41,15 @@ const PAGE83: &str = "BECA12AB-B2E6-4523-93EF-C309E000C746";
 const LOGICAL_SECTOR: &str = "8141BF1D-A96F-4709-BA47-F233A8FAAB5F";
 const PHYSICAL_SECTOR: &str = "CDA348C7-445D-4471-9CC9-E9885251C556";
 const PARENT_LOCATOR: &str = "A8D35F2D-B30B-454D-ABF7-D3D84834AB0C";
+/// LocatorType of a VHDX parent locator.
+const VHDX_PARENT_TYPE: &str = "B04AEFB7-D19E-4A81-B789-25B8E9445913";
 
 const STATE_MASK: u64 = 7;
+const PAYLOAD_NOT_PRESENT: u64 = 0;
+const PAYLOAD_UNDEFINED: u64 = 1;
 const PAYLOAD_FULLY_PRESENT: u64 = 6;
 const PAYLOAD_PARTIALLY_PRESENT: u64 = 7;
+const SB_BLOCK_PRESENT: u64 = 6;
 const OFFSET_MASK: u64 = !0xF_FFFF;
 
 /// A byte range of the file as it would read after replaying the log.
@@ -64,6 +75,116 @@ pub(crate) struct VhdxDisk {
     fixed: bool,
     file_len: u64,
     overlay: Vec<Patch>,
+    /// Differencing disks: the parent that supplies what the child never wrote.
+    parent: Option<Box<dyn Disk>>,
+    parent_path: Option<PathBuf>,
+}
+
+/// Key/value pairs of a parent locator (UTF-16LE strings).
+fn parse_locator(loc: &[u8]) -> Result<Vec<(String, String)>> {
+    if loc.len() < 20 || loc[0..16] != guid(VHDX_PARENT_TYPE) {
+        return Err(Error::Unsupported(
+            "differencing VHDX with an unknown parent locator type".into(),
+        ));
+    }
+    let utf16 = |off: usize, len: usize| -> Option<String> {
+        let b = loc.get(off..off.checked_add(len)?)?;
+        let units: Vec<u16> = b
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        Some(String::from_utf16_lossy(&units))
+    };
+    let mut kv = Vec::new();
+    for i in 0..le16(loc, 18) as usize {
+        let e = 20 + i * 12;
+        if e + 12 > loc.len() {
+            break;
+        }
+        let (ko, vo) = (le32(loc, e) as usize, le32(loc, e + 4) as usize);
+        let (kl, vl) = (le16(loc, e + 8) as usize, le16(loc, e + 10) as usize);
+        if let (Some(k), Some(v)) = (utf16(ko, kl), utf16(vo, vl)) {
+            kv.push((k, v));
+        }
+    }
+    Ok(kv)
+}
+
+fn build_locator(kv: &[(&str, String)]) -> Vec<u8> {
+    let mut out = vec![0u8; 20 + kv.len() * 12];
+    out[0..16].copy_from_slice(&guid(VHDX_PARENT_TYPE));
+    put_le16(&mut out, 18, kv.len() as u16);
+    for (i, (k, v)) in kv.iter().enumerate() {
+        let e = 20 + i * 12;
+        let kb: Vec<u8> = k.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let vb: Vec<u8> = v.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let at = out.len() as u32;
+        put_le32(&mut out, e, at);
+        put_le16(&mut out, e + 8, kb.len() as u16);
+        out.extend_from_slice(&kb);
+        let at = out.len() as u32;
+        put_le32(&mut out, e + 4, at);
+        put_le16(&mut out, e + 10, vb.len() as u16);
+        out.extend_from_slice(&vb);
+    }
+    out
+}
+
+/// The DataWriteGuid of a VHDX file (from its current header), as a bare GUID string.
+fn data_write_guid(path: &Path) -> Option<String> {
+    let mut f = File::open(path).ok()?;
+    let mut best: Option<[u8; HEADER_SIZE]> = None;
+    for &off in &HEADER_OFFSETS {
+        let mut h = [0u8; HEADER_SIZE];
+        read_up_to(&mut f, off, &mut h).ok()?;
+        if header_valid(&h) && best.as_ref().is_none_or(|b| le64(&h, 8) > le64(b, 8)) {
+            best = Some(h);
+        }
+    }
+    best.map(|h| guid_string(&h[32..48]))
+}
+
+fn bare_guid(s: &str) -> String {
+    s.trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .to_uppercase()
+}
+
+/// Find the parent a locator names: relative path first (from the child's folder), then the
+/// volume and absolute paths, then a file of that name next to the child.
+fn find_parent(child: &Path, kv: &[(String, String)]) -> Result<PathBuf> {
+    let dir = child
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let get = |k: &str| kv.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+    let names: Vec<&str> = ["relative_path", "volume_path", "absolute_win32_path"]
+        .iter()
+        .filter_map(|k| get(k))
+        .collect();
+    for name in &names {
+        let p = resolve_name(dir, name);
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    for name in &names {
+        if let Some(base) = Path::new(&name.replace('\\', "/")).file_name() {
+            let p = dir.join(base);
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
+    Err(Error::Invalid(if names.is_empty() {
+        "differencing VHDX has no parent path".into()
+    } else {
+        format!(
+            "parent disk of the differencing VHDX not found (looked for {})",
+            names.join(", ")
+        )
+    }))
 }
 
 /// Read file bytes as they would be after the log replay; past EOF reads zeros.
@@ -351,11 +472,20 @@ impl VhdxDisk {
             .ok_or_else(|| Error::Invalid("VHDX file parameters missing".into()))?;
         let block_size = u64::from(le32(params, 0));
         let flags = le32(params, 4);
-        if flags & 2 != 0 {
-            return Err(Error::Unsupported(
-                "differencing VHDX (needs its parent disk)".into(),
-            ));
-        }
+        let has_parent = flags & 2 != 0;
+        let locator = if has_parent {
+            let id = guid(PARENT_LOCATOR);
+            let loc = (0..le16(&meta, 10) as usize).find_map(|i| {
+                let e = &meta[32 + i * 32..64 + i * 32];
+                let (off, l) = (le32(e, 16) as usize, le32(e, 20) as usize);
+                (e[0..16] == id && off + l <= meta.len()).then(|| meta[off..off + l].to_vec())
+            });
+            Some(parse_locator(&loc.ok_or_else(|| {
+                Error::Invalid("differencing VHDX has no parent locator".into())
+            })?)?)
+        } else {
+            None
+        };
         let size = le64(
             item(VIRTUAL_SIZE, 8)
                 .ok_or_else(|| Error::Invalid("VHDX virtual size missing".into()))?,
@@ -374,13 +504,49 @@ impl VhdxDisk {
         }
         let chunk_ratio = (1u64 << 23) * u64::from(logical_sector) / block_size;
         let data_blocks = size.div_ceil(block_size);
-        let entries = data_blocks + data_blocks.saturating_sub(1) / chunk_ratio;
+        let entries = if has_parent {
+            data_blocks.div_ceil(chunk_ratio) * (chunk_ratio + 1)
+        } else {
+            data_blocks + data_blocks.saturating_sub(1) / chunk_ratio
+        };
         if entries * 8 > bat_len {
             return Err(Error::Invalid("VHDX BAT region is too small".into()));
         }
         let mut raw = vec![0u8; (entries * 8) as usize];
         pread(&mut file, &overlay, bat_offset, &mut raw)?;
         let bat = raw.chunks(8).map(|c| le64(c, 0)).collect();
+
+        let (parent, parent_path) = match &locator {
+            None => (None, None),
+            Some(kv) => {
+                let found = find_parent(path, kv)?;
+                let linkage: Vec<String> = kv
+                    .iter()
+                    .filter(|(k, _)| k == "parent_linkage" || k == "parent_linkage2")
+                    .map(|(_, v)| bare_guid(v))
+                    .collect();
+                if let Some(actual) = data_write_guid(&found)
+                    && !linkage.is_empty()
+                    && !linkage.contains(&actual)
+                {
+                    return Err(Error::Invalid(format!(
+                        "parent disk {} has changed since this differencing VHDX was made \
+                         from it (DataWriteGuid {} expected, found {})",
+                        found.display(),
+                        linkage[0],
+                        actual
+                    )));
+                }
+                let p = open_parent(&found)?;
+                if p.size() < size {
+                    return Err(Error::Invalid(format!(
+                        "parent disk {} is smaller than the differencing VHDX",
+                        found.display()
+                    )));
+                }
+                (Some(p), Some(found))
+            }
+        };
 
         let mut disk = VhdxDisk {
             file,
@@ -397,6 +563,8 @@ impl VhdxDisk {
             fixed: flags & 1 != 0,
             file_len,
             overlay,
+            parent,
+            parent_path,
         };
         if replayed {
             disk.update_headers()?;
@@ -405,11 +573,49 @@ impl VhdxDisk {
     }
 
     pub(crate) fn create(path: &Path, size: u64, dynamic: bool) -> Result<Self> {
-        let logical: u32 = 512;
         let bs = if size <= GIB { 2 * MIB } else { 32 * MIB };
+        Self::create_inner(path, size, dynamic, bs, 512, None)
+    }
+
+    /// Create an empty differencing VHDX over the VHDX `parent_path` (itself possibly
+    /// differencing), the way Hyper-V does: 2 MiB blocks, the parent's sector size, and a
+    /// parent locator with the parent's DataWriteGuid and relative and absolute paths.
+    pub(crate) fn create_differencing(path: &Path, parent_path: &Path) -> Result<Self> {
+        let parent = VhdxDisk::open(parent_path, false).map_err(|e| {
+            Error::Invalid(format!(
+                "parent {} is not a usable VHDX: {e}",
+                parent_path.display()
+            ))
+        })?;
+        let linkage = format!("{{{}}}", guid_string(&parent.header[32..48]));
+        let abs_parent = std::path::absolute(parent_path)?;
+        let abs_child = std::path::absolute(path)?;
+        let child_dir = abs_child.parent().unwrap_or(Path::new("."));
+        let mut kv = vec![("parent_linkage", linkage)];
+        if let Some(rel) = relative_windows_path(child_dir, &abs_parent) {
+            kv.push(("relative_path", rel));
+        }
+        kv.push(("absolute_win32_path", windows_path_string(&abs_parent)));
+        let (size, logical) = (parent.size, parent.logical_sector);
+        drop(parent);
+        Self::create_inner(path, size, true, 2 * MIB, logical, Some(build_locator(&kv)))
+    }
+
+    fn create_inner(
+        path: &Path,
+        size: u64,
+        dynamic: bool,
+        bs: u64,
+        logical: u32,
+        locator: Option<Vec<u8>>,
+    ) -> Result<Self> {
         let chunk_ratio = (1u64 << 23) * u64::from(logical) / bs;
         let data_blocks = size.div_ceil(bs);
-        let entries = data_blocks + (data_blocks - 1) / chunk_ratio;
+        let entries = if locator.is_some() {
+            data_blocks.div_ceil(chunk_ratio) * (chunk_ratio + 1)
+        } else {
+            data_blocks + (data_blocks - 1) / chunk_ratio
+        };
         let (log_off, log_len) = (MIB, MIB);
         let (meta_off, meta_len) = (2 * MIB, MIB);
         let bat_off = 3 * MIB;
@@ -475,18 +681,22 @@ impl VhdxDisk {
             write_at(&mut file, off, &r)?;
         }
 
-        let mut m = vec![0u8; 64 * KIB as usize + 64];
+        let mut m = vec![0u8; 64 * KIB as usize + 4096];
         m[0..8].copy_from_slice(b"metadata");
         let mut params = [0u8; 8];
         put_le32(&mut params, 0, bs as u32);
-        put_le32(&mut params, 4, if dynamic { 0 } else { 1 });
-        let items: [(&str, Vec<u8>, u32); 5] = [
+        let has_parent = if locator.is_some() { 2 } else { 0 };
+        put_le32(&mut params, 4, if dynamic { has_parent } else { 1 });
+        let mut items: Vec<(&str, Vec<u8>, u32)> = vec![
             (FILE_PARAMS, params.to_vec(), 4),
             (VIRTUAL_SIZE, size.to_le_bytes().to_vec(), 6),
             (LOGICAL_SECTOR, logical.to_le_bytes().to_vec(), 6),
             (PHYSICAL_SECTOR, 4096u32.to_le_bytes().to_vec(), 6),
             (PAGE83, new_guid().to_vec(), 6),
         ];
+        if let Some(loc) = locator {
+            items.push((PARENT_LOCATOR, loc, 4));
+        }
         put_le16(&mut m, 10, items.len() as u16);
         let mut data_at = 64 * KIB as usize;
         for (i, (id, data, flags)) in items.iter().enumerate() {
@@ -509,6 +719,116 @@ impl VhdxDisk {
 
     fn bat_index(&self, block: u64) -> usize {
         (block + block / self.chunk_ratio) as usize
+    }
+
+    /// For each sector in `first..=last` of `block`: whether the child holds it (its bit in
+    /// the chunk's sector bitmap). A missing bitmap block means none.
+    fn sector_bits(&mut self, block: u64, first: u64, last: u64) -> io::Result<Vec<bool>> {
+        let idx = ((block / self.chunk_ratio) * (self.chunk_ratio + 1) + self.chunk_ratio) as usize;
+        let sb = self.bat.get(idx).copied().unwrap_or(0);
+        let n = (last - first + 1) as usize;
+        if sb & STATE_MASK != SB_BLOCK_PRESENT {
+            return Ok(vec![false; n]);
+        }
+        let per_block = self.block_size / u64::from(self.logical_sector);
+        let bit0 = (block % self.chunk_ratio) * per_block + first;
+        let (b0, b1) = (bit0 / 8, (bit0 + n as u64 - 1) / 8);
+        let mut bytes = vec![0u8; (b1 - b0 + 1) as usize];
+        pread(
+            &mut self.file,
+            &self.overlay,
+            (sb & OFFSET_MASK) + b0,
+            &mut bytes,
+        )?;
+        Ok((0..n as u64)
+            .map(|i| {
+                let bit = bit0 + i - b0 * 8;
+                bytes[(bit / 8) as usize] >> (bit % 8) & 1 != 0
+            })
+            .collect())
+    }
+
+    /// Read `chunk` from `within` bytes into `block` (which it does not cross).
+    fn read_block(&mut self, block: u64, within: u64, chunk: &mut [u8]) -> io::Result<()> {
+        let entry = self.bat[self.bat_index(block)];
+        let virt = block * self.block_size + within;
+        match entry & STATE_MASK {
+            PAYLOAD_FULLY_PRESENT => pread(
+                &mut self.file,
+                &self.overlay,
+                (entry & OFFSET_MASK) + within,
+                chunk,
+            ),
+            PAYLOAD_PARTIALLY_PRESENT if self.parent.is_some() => {
+                let ss = u64::from(self.logical_sector);
+                let first = within / ss;
+                let last = (within + chunk.len() as u64 - 1) / ss;
+                let bits = self.sector_bits(block, first, last)?;
+                let mut at = 0usize;
+                while at < chunk.len() {
+                    let pos = within + at as u64;
+                    let s = (pos / ss - first) as usize;
+                    let mine = bits[s];
+                    let mut end_sector = s + 1;
+                    while end_sector < bits.len() && bits[end_sector] == mine {
+                        end_sector += 1;
+                    }
+                    let end =
+                        (((first + end_sector as u64) * ss - within) as usize).min(chunk.len());
+                    let part = &mut chunk[at..end];
+                    if mine {
+                        pread(
+                            &mut self.file,
+                            &self.overlay,
+                            (entry & OFFSET_MASK) + pos,
+                            part,
+                        )?;
+                    } else if let Some(p) = self.parent.as_mut() {
+                        p.read_at(virt + at as u64, part)?;
+                    }
+                    at = end;
+                }
+                Ok(())
+            }
+            PAYLOAD_PARTIALLY_PRESENT => pread(
+                &mut self.file,
+                &self.overlay,
+                (entry & OFFSET_MASK) + within,
+                chunk,
+            ),
+            PAYLOAD_NOT_PRESENT | PAYLOAD_UNDEFINED if self.parent.is_some() => {
+                self.parent.as_mut().unwrap().read_at(virt, chunk)
+            }
+            _ => {
+                chunk.fill(0);
+                Ok(())
+            }
+        }
+    }
+
+    /// Differencing disks: make `block` fully present, copying in what the parent (or the
+    /// sectors the block already holds) has, before part of it is overwritten.
+    fn copy_up(&mut self, block: u64, idx: usize) -> io::Result<u64> {
+        let entry = self.bat[idx];
+        let mut data = vec![0u8; self.block_size as usize];
+        self.read_block(block, 0, &mut data)?;
+        let start = if entry & STATE_MASK == PAYLOAD_PARTIALLY_PRESENT {
+            entry & OFFSET_MASK
+        } else {
+            let start = round_up(self.file_len, MIB);
+            self.file_len = start + self.block_size;
+            self.file.set_len(self.file_len)?;
+            start
+        };
+        write_at(&mut self.file, start, &data)?;
+        let entry = start | PAYLOAD_FULLY_PRESENT;
+        self.bat[idx] = entry;
+        write_at(
+            &mut self.file,
+            self.bat_offset + idx as u64 * 8,
+            &entry.to_le_bytes(),
+        )?;
+        Ok(start)
     }
 
     /// Before the first change: new write GUIDs, a cleared log GUID, both headers rewritten.
@@ -579,17 +899,7 @@ impl Disk for VhdxDisk {
                 .min(self.block_size - within)
                 .min(self.size - offset) as usize;
             let (chunk, rest) = buf.split_at_mut(n);
-            let entry = self.bat[self.bat_index(block)];
-            if present(entry) {
-                pread(
-                    &mut self.file,
-                    &self.overlay,
-                    (entry & OFFSET_MASK) + within,
-                    chunk,
-                )?;
-            } else {
-                chunk.fill(0);
-            }
+            self.read_block(block, within, chunk)?;
             offset += n as u64;
             buf = rest;
         }
@@ -615,7 +925,18 @@ impl Disk for VhdxDisk {
             let n = (buf.len() as u64).min(self.block_size - within) as usize;
             let idx = self.bat_index(block);
             let entry = self.bat[idx];
-            let base = if present(entry) {
+            let state = entry & STATE_MASK;
+            let inherits = self.parent.is_some()
+                && matches!(
+                    state,
+                    PAYLOAD_NOT_PRESENT | PAYLOAD_UNDEFINED | PAYLOAD_PARTIALLY_PRESENT
+                );
+            let base = if inherits {
+                if !self.headers_updated {
+                    self.update_headers()?;
+                }
+                Some(self.copy_up(block, idx)?)
+            } else if present(entry) {
                 Some(entry & OFFSET_MASK)
             } else if is_zero(&buf[..n]) {
                 None
@@ -642,17 +963,36 @@ impl Disk for VhdxDisk {
     }
 
     fn info(&self) -> ContainerInfo {
-        ContainerInfo::simple(
+        let mut info = ContainerInfo::simple(
             ContainerKind::Vhdx,
-            if self.fixed { "fixed" } else { "dynamic" },
+            if self.parent.is_some() {
+                "differencing"
+            } else if self.fixed {
+                "fixed"
+            } else {
+                "dynamic"
+            },
             self.size,
-        )
+        );
+        info.parent = self.parent_path.as_ref().map(|p| p.display().to_string());
+        info
     }
 
     fn is_allocated(&mut self, offset: u64, len: u64) -> io::Result<bool> {
         let first = offset / self.block_size;
         let last = (offset + len.max(1) - 1) / self.block_size;
-        Ok((first..=last).any(|b| self.bat.get(self.bat_index(b)).is_some_and(|&e| present(e))))
+        let mut inherits = false;
+        for b in first..=last {
+            match self.bat.get(self.bat_index(b)).map(|&e| e & STATE_MASK) {
+                Some(PAYLOAD_FULLY_PRESENT | PAYLOAD_PARTIALLY_PRESENT) => return Ok(true),
+                Some(PAYLOAD_NOT_PRESENT | PAYLOAD_UNDEFINED) => inherits = true,
+                _ => {}
+            }
+        }
+        match self.parent.as_mut() {
+            Some(p) if inherits => p.is_allocated(offset, len),
+            _ => Ok(false),
+        }
     }
 }
 

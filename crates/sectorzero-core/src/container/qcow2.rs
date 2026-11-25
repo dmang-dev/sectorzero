@@ -6,10 +6,10 @@
 //! zero clusters, or describing deflate-compressed clusters), and a refcount table of
 //! refcount blocks that counts the references to every host cluster.
 //!
-//! Supported: reading plain, zero and zlib-compressed clusters, backing files (any image
+//! Supported: reading plain, zero, and deflate- or zstd-compressed clusters, backing files (any image
 //! format this crate opens), writing (new clusters are appended; refcounts are kept exact),
 //! and creating new version 3 images. Not supported: encryption, external data files,
-//! extended L2 entries, zstd compression, and writing images that have internal snapshots.
+//! extended L2 entries, and writing images that have internal snapshots.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -61,6 +61,8 @@ pub(crate) struct Qcow2Disk {
     next_free: u64,
     /// Last decompressed cluster (host descriptor, data).
     inflated: Option<(u64, Vec<u8>)>,
+    /// Compressed clusters are zstd frames (compression type 1), not raw deflate.
+    zstd: bool,
 }
 
 fn unsupported(what: &str) -> Error {
@@ -130,9 +132,15 @@ impl Qcow2Disk {
         if incompat & INCOMPAT_EXTENDED_L2 != 0 {
             return Err(unsupported("extended L2 entries (subclusters)"));
         }
-        if incompat & INCOMPAT_COMPRESSION != 0 && h.get(104).copied().unwrap_or(0) != 0 {
-            return Err(unsupported("zstd compression"));
-        }
+        // Compression type (byte 104): 0 deflate, 1 zstd.
+        let zstd = match (
+            incompat & INCOMPAT_COMPRESSION != 0,
+            h.get(104).copied().unwrap_or(0),
+        ) {
+            (false, _) | (true, 0) => false,
+            (true, 1) => true,
+            (true, n) => return Err(unsupported(&format!("compression type {n}"))),
+        };
         let known = INCOMPAT_DIRTY
             | INCOMPAT_CORRUPT
             | INCOMPAT_EXTERNAL_DATA
@@ -238,6 +246,7 @@ impl Qcow2Disk {
             backing_name,
             next_free: round_up(len, cs),
             inflated: None,
+            zstd,
         })
     }
 
@@ -307,6 +316,7 @@ impl Qcow2Disk {
             backing_name: None,
             next_free: meta * cs,
             inflated: None,
+            zstd: false,
         })
     }
 
@@ -356,9 +366,14 @@ impl Qcow2Disk {
             let got = read_up_to(&mut self.file, host, &mut input)?;
             input.truncate(got);
             let mut out = vec![0u8; self.cluster_size() as usize];
-            let mut d = flate2::Decompress::new(false);
-            let r = d.decompress(&input, &mut out, flate2::FlushDecompress::Finish);
-            if r.is_err() || d.total_out() != self.cluster_size() {
+            let full = if self.zstd {
+                zstd_cluster(&input, &mut out)
+            } else {
+                let mut d = flate2::Decompress::new(false);
+                let r = d.decompress(&input, &mut out, flate2::FlushDecompress::Finish);
+                r.is_ok() && d.total_out() == self.cluster_size()
+            };
+            if !full {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "corrupt compressed QCOW2 cluster",
@@ -589,6 +604,26 @@ impl Disk for Qcow2Disk {
             }
         }
         Ok(false)
+    }
+}
+
+/// Decompress one zstd-compressed cluster. The stored extent may run past the end of the
+/// frame (it is rounded up to sectors), so decode as a stream and stop once `out` is full.
+fn zstd_cluster(input: &[u8], out: &mut [u8]) -> bool {
+    use zstd::stream::raw::{Decoder, InBuffer, Operation, OutBuffer};
+    let Ok(mut dec) = Decoder::new() else {
+        return false;
+    };
+    let mut inb = InBuffer::around(input);
+    let mut outb = OutBuffer::around(out);
+    loop {
+        match dec.run(&mut inb, &mut outb) {
+            Err(_) => return false,
+            Ok(_) if outb.pos() == outb.capacity() => return true,
+            Ok(0) => return false,
+            Ok(_) if inb.pos() == input.len() => return false,
+            Ok(_) => {}
+        }
     }
 }
 

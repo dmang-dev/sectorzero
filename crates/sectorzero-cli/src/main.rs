@@ -40,7 +40,7 @@ struct Cli {
 
 #[derive(clap::Args)]
 struct Img {
-    /// Image file: .ima .img .imz .vhd .vhdx .vmdk .vdi .qcow2 .iso .cue .nrg …, or a block device
+    /// Image file: .ima .img .imz .vhd .vhdx .vmdk .vdi .qcow2 .iso .cue .nrg .mrimgx .img.gz .zip …, or a block device
     image: PathBuf,
     /// Partition number (MBR 1-4 primary, 5+ logical; GPT entry). Default: the first FAT partition.
     #[arg(short, long)]
@@ -320,7 +320,7 @@ enum Cmd {
     Formats,
     /// Create a new empty formatted image. The container follows the extension
     /// (.imz .vhd .vhdx .vmdk .vdi .qcow2 .nhd .hdi .fdi; raw otherwise) unless --container
-    /// is given.
+    /// is given. Add .gz, .xz, .zst, .bz2, .zip or .7z to compress it (disk.vhd.xz).
     New {
         image: PathBuf,
         #[command(flatten)]
@@ -594,8 +594,9 @@ enum Cmd {
     },
     /// Cut unused space off the end of a raw floppy or volume image.
     Truncate { image: PathBuf },
-    /// Create a differencing VHD (or Virtual PC undo disk, .vud) over PARENT: reads of
-    /// unchanged sectors come from the parent, writes go only to the new file.
+    /// Create a differencing disk over PARENT: a VHD (.vhd, or .vud for a Virtual PC undo
+    /// disk), a VHDX (.vhdx, .avhdx) over a VHDX, or a VMDK snapshot (.vmdk) over a VMDK.
+    /// Reads of unchanged sectors come from the parent, writes go only to the new file.
     Diff {
         parent: PathBuf,
         child: PathBuf,
@@ -1220,6 +1221,12 @@ fn run(cli: Cli) -> Result<()> {
             }
             if container.encrypted {
                 row(&t!("encryption"), t!("password (AES-128)"));
+            }
+            if let Some(c) = &container.compression {
+                row(&t!("compression"), c);
+            }
+            if let Some(p) = &container.parent {
+                row(&t!("parent"), p);
             }
             print_layout(&layout);
             match vol {
