@@ -678,7 +678,6 @@
   "serial": "seri numarası",
   "size must be positive": "boyut pozitif olmalıdır",
   "source and destination are the same file": "kaynak ve hedef aynı dosya",
-  "sparse images with more than {0} bands in use": "{0} taneden fazla bant kullanan seyrek kalıplar",
   "start": "başlangıç",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "akış için iyileştirilmiş VMDK kalıpları salt okunurdur (önce başka bir biçime dönüştürün)",
   "superblock checksum": "süper blok sağlama toplamı",

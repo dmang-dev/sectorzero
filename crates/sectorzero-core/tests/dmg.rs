@@ -460,6 +460,35 @@ fn sparse_image_and_sparse_bundle() {
     assert_eq!(sum(&spi), want);
     assert_eq!(data_file(&spi), data());
 
+    // More than 1008 bands in use: each further header follows the last band of the one
+    // before and is linked from offset 20, as hdiutil writes them (seen on macOS 26).
+    let small = 4096;
+    let order: Vec<usize> = (0..raw.len() / small).rev().collect();
+    let mut sp = Vec::new();
+    for (k, group) in order.chunks(1008).enumerate() {
+        let start = sp.len();
+        sp.resize(start + 4096, 0);
+        let h = &mut sp[start..];
+        h[0..4].copy_from_slice(b"sprs");
+        h[4..8].copy_from_slice(&3u32.to_be_bytes());
+        h[8..12].copy_from_slice(&((small / S) as u32).to_be_bytes());
+        h[12..16].copy_from_slice(&1u32.to_be_bytes());
+        h[16..20].copy_from_slice(&((raw.len() / S) as u32).to_be_bytes());
+        for (slot, &b) in group.iter().enumerate() {
+            h[64 + slot * 4..68 + slot * 4].copy_from_slice(&(b as u32 + 1).to_be_bytes());
+        }
+        for &b in group {
+            sp.extend_from_slice(&raw[b * small..(b + 1) * small]);
+        }
+        if k + 1 < order.len().div_ceil(1008) {
+            let next = sp.len() as u64;
+            sp[start + 20..start + 28].copy_from_slice(&next.to_be_bytes());
+        }
+    }
+    fs::write(&spi, &sp).unwrap();
+    assert_eq!(sum(&spi), want);
+    assert_eq!(data_file(&spi), data());
+
     // .sparsebundle: Info.plist, an empty token, and band files named in hex; the last
     // band file is shorter than the band size.
     let sb = tmp.path().join("disk.sparsebundle");

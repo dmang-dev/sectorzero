@@ -678,7 +678,6 @@
   "serial": "シリアル番号",
   "size must be positive": "サイズは正の値にしてください",
   "source and destination are the same file": "コピー元とコピー先が同じファイルです",
-  "sparse images with more than {0} bands in use": "使用中のバンドが {0} を超えるスパース イメージ",
   "start": "開始",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "ストリーム最適化 VMDK イメージは読み取り専用です (先に別の形式に変換してください)",
   "superblock checksum": "スーパーブロックのチェックサムが一致しません",

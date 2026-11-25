@@ -147,8 +147,11 @@ language. Catalogs live in `app/ui/locales/` (checked by `node app/i18n-check.mj
 - **Snapshots:** `qemu-img` and `qemu-io` read VMDK snapshots made here, and SectorZero reads theirs
   (two-level chains, partial grains, stream-optimized VMDK). Differencing VHDX and VDI and
   Windows Backup folders are checked by this project's own tests only so far, as is VHDX.
-- **Apple disk images:** checked by this project's own tests only so far (images built from the
-  published format notes); no image made by `hdiutil` has been tried yet.
+- **Apple disk images:** checked against `hdiutil` on macOS 26 in CI (`.github/oracle/hdiutil.sh`):
+  UDRO, UDCO, UDZO, UDBZ, ULFO and ULMO images, split `.dmgpart` sets, sparse images (also one
+  over 4 GiB with chained headers) and sparse bundles read byte for byte like hdiutil's raw
+  conversion, on GPT, APM, MBR and bare disks, and the HFS+, FAT32 and exFAT files inside match.
+  Encrypted images are refused. APFS volumes open as disks only.
 
 **Not yet** (see RESEARCH.md §5): low-level floppy formatting, writing to NTFS, writing to ISO
 images beyond in-place replacement, resizing non-FAT partitions.

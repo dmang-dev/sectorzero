@@ -678,7 +678,6 @@
   "serial": "序列号",
   "size must be positive": "大小必须为正数",
   "source and destination are the same file": "源和目标是同一个文件",
-  "sparse images with more than {0} bands in use": "已用条带超过 {0} 个的稀疏映像",
   "start": "起始",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "流优化 VMDK 映像为只读（请先转换为其他格式）",
   "superblock checksum": "超级块校验和",

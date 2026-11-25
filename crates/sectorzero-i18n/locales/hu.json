@@ -678,7 +678,6 @@
   "serial": "sorozatszám",
   "size must be positive": "a méretnek pozitívnak kell lennie",
   "source and destination are the same file": "a forrás és a cél ugyanaz a fájl",
-  "sparse images with more than {0} bands in use": "{0}-nál több használt sávot tartalmazó ritka lemezképek",
   "start": "kezdet",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "az adatfolyamra optimalizált VMDK-képfájlok csak olvashatók (előbb konvertálja őket más formátumba)",
   "superblock checksum": "szuperblokk-ellenőrzőösszeg",

@@ -678,7 +678,6 @@
   "serial": "серийный №",
   "size must be positive": "размер должен быть положительным",
   "source and destination are the same file": "источник и назначение — один и тот же файл",
-  "sparse images with more than {0} bands in use": "разреженные образы, в которых занято более {0} полос",
   "start": "начало",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "образы VMDK, оптимизированные для потока, доступны только для чтения (сначала преобразуйте их в другой формат)",
   "superblock checksum": "контрольная сумма суперблока",

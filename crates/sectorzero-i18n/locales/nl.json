@@ -678,7 +678,6 @@
   "serial": "Serienr.",
   "size must be positive": "grootte moet positief zijn",
   "source and destination are the same file": "bron en doel zijn hetzelfde bestand",
-  "sparse images with more than {0} bands in use": "sparse-images met meer dan {0} gebruikte banden",
   "start": "start",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "stream-geoptimaliseerde VMDK-images zijn alleen-lezen (converteer ze eerst naar een ander formaat)",
   "superblock checksum": "controlesom van superblok",

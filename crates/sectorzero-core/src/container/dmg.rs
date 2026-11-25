@@ -576,46 +576,53 @@ pub(crate) struct SparseImageDisk {
     file_len: u64,
     band: u64,
     size: u64,
-    /// Media band → file slot (`None`: never written, reads as zeros).
-    slots: Vec<Option<u32>>,
+    /// Media band → file offset of its data (`None`: never written, reads as zeros).
+    slots: Vec<Option<u64>>,
 }
 
 impl SparseImageDisk {
     pub(crate) fn open(path: &Path) -> Result<SparseImageDisk> {
+        let bad_header = || Error::Invalid("bad sparse image header".into());
         let mut file = File::open(path)?;
         let file_len = file_len(&mut file)?;
         let mut h = [0u8; 4096];
         if read_up_to(&mut file, 0, &mut h)? != h.len() || !looks_like_sparseimage(&h) {
-            return Err(Error::Invalid("bad sparse image header".into()));
+            return Err(bad_header());
         }
         let band = be32(&h, 8) as u64 * SECTOR;
         let size = be32(&h, 16) as u64 * SECTOR;
         if band == 0 {
-            return Err(Error::Invalid("bad sparse image header".into()));
+            return Err(bad_header());
         }
         let bands = size.div_ceil(band) as usize;
-        let table: Vec<u32> = h[64..]
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| u32::from_be_bytes(*c))
-            .collect();
-        if table.iter().all(|&b| b != 0) && bands > table.len() {
-            return Err(Error::Unsupported(format!(
-                "sparse images with more than {} bands in use",
-                table.len()
-            )));
-        }
         let mut slots = vec![None; bands];
-        for (slot, &b) in table.iter().enumerate() {
-            if b == 0 {
-                continue;
+        // Each header maps up to 1008 bands, stored right after it. When they are all used,
+        // hdiutil writes another header after the last band and links it from the field at
+        // offset 20 (0: none).
+        let mut at = 0u64;
+        loop {
+            for (slot, c) in h[64..].as_chunks::<4>().0.iter().enumerate() {
+                let b = u32::from_be_bytes(*c);
+                if b == 0 {
+                    continue;
+                }
+                let m = (b - 1) as usize;
+                if m >= bands || slots[m].is_some() {
+                    return Err(bad_header());
+                }
+                slots[m] = Some(at + 4096 + slot as u64 * band);
             }
-            let m = (b - 1) as usize;
-            if m >= bands || slots[m].is_some() {
-                return Err(Error::Invalid("bad sparse image header".into()));
+            let next = be64(&h, 20);
+            if next == 0 {
+                break;
             }
-            slots[m] = Some(slot as u32);
+            if next <= at || next >= file_len {
+                return Err(bad_header());
+            }
+            at = next;
+            if read_up_to(&mut file, at, &mut h)? != h.len() || !looks_like_sparseimage(&h) {
+                return Err(bad_header());
+            }
         }
         Ok(SparseImageDisk {
             file,
@@ -640,8 +647,8 @@ impl Disk for SparseImageDisk {
             let n = ((self.band - within) as usize).min(buf.len() - done);
             let out = &mut buf[done..done + n];
             out.fill(0);
-            if let Some(Some(slot)) = self.slots.get(b) {
-                let pos = 4096 + *slot as u64 * self.band + within;
+            if let Some(Some(start)) = self.slots.get(b) {
+                let pos = start + within;
                 if pos < self.file_len {
                     read_up_to(&mut self.file, pos, out)?;
                 }

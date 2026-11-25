@@ -482,10 +482,15 @@ is decoded whole (cached). zlib, bzip2 and xz blocks are read to their end so th
 run; LZFSE, ADC and stored blocks have none, and the CRC-32 checksums in the trailer and the
 block tables are not checked yet. Sparse image: `sprs` header, sectors per band at 8, size
 in sectors at 16, and from offset 64 a table where entry *i* holds the media band (plus one)
-stored at 4096 + *i* × band size. What follows when all 1008 entries of the first 4096 bytes
-are used is not described; such images are refused. Sparse bundle: `Info.plist` (`band-size`,
+stored at 4096 + *i* × band size. When all 1008 entries are used, hdiutil writes another
+header (same layout) right after the last band and links it from the big-endian u64 at
+offset 20 (0 in the last header); seen on macOS 26, where a 1300 MiB image had its second
+header at 4096 + 1008 × 1 MiB. Sparse bundle: `Info.plist` (`band-size`,
 `size`, bundle type `com.apple.diskimage.sparsebundle`) and `bands/<hex>` files, missing
 or short bands read as zeros; a non-empty `token` means encrypted. Encrypted images
-(`encrcdsa`) are refused. Checked only against images built in the tests from those notes;
-`hdiutil` on a macOS runner is the oracle still to use (UDRO/UDZO/UDBZ/ULFO/ULMO, sparse
-image and bundle, an APM/HFS+ and a GPT/APFS disk).
+(`encrcdsa`) are refused. Cross-checked in CI against `hdiutil` on macOS 26
+(`.github/oracle/hdiutil.sh`, workflow `oracle-dmg.yml`): every UDIF format, 1 MiB
+`hdiutil segment` sets, UDSP/UDSB, GPT/APM/MBR/bare layouts with HFS+, FAT32, exFAT and APFS,
+and encrypted UDIF, sparse image and sparse bundle (refused), all byte-identical to hdiutil's
+UDTO conversion. Still unchecked: the CRC-32 checksums, and images whose blocks only a
+resource fork describes (current hdiutil always writes the XML plist).

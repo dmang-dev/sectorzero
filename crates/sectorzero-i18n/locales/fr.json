@@ -678,7 +678,6 @@
   "serial": "n° de série",
   "size must be positive": "la taille doit être positive",
   "source and destination are the same file": "la source et la destination sont le même fichier",
-  "sparse images with more than {0} bands in use": "les images clairsemées de plus de {0} bandes utilisées",
   "start": "début",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "les images VMDK optimisées pour le flux sont en lecture seule (convertissez-les d'abord dans un autre format)",
   "superblock checksum": "somme de contrôle du superbloc",

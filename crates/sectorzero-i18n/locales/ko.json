@@ -678,7 +678,6 @@
   "serial": "일련 번호",
   "size must be positive": "크기는 양수여야 합니다",
   "source and destination are the same file": "원본과 대상이 같은 파일입니다",
-  "sparse images with more than {0} bands in use": "사용 중인 밴드가 {0}개를 넘는 스파스 이미지",
   "start": "시작",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "스트림 최적화 VMDK 이미지는 읽기 전용입니다(먼저 다른 형식으로 변환하십시오)",
   "superblock checksum": "슈퍼블록 체크섬이 일치하지 않습니다",

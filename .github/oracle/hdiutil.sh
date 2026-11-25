@@ -116,9 +116,10 @@ make_rw exfat GPTSPUD ExFAT 16m && hdiutil convert -quiet exfat.dmg -format UDBZ
 make_rw apfs GPTSPUD APFS 32m && hdiutil convert -quiet apfs.dmg -format ULFO -o apfs-z.dmg >/dev/null &&
   check_image apfs-z.dmg "GPT-APFS" no
 
-# 4. A disk image made straight from a folder (hdiutil picks everything itself).
+# 4. A disk image made straight from a folder (hdiutil picks everything itself; on current
+# macOS that is an APFS volume, so only the disk is compared).
 hdiutil create -quiet -srcfolder src -volname "From Folder" -o folder.dmg >/dev/null &&
-  check_image folder.dmg "srcfolder-default" yes
+  check_image folder.dmg "srcfolder-default" no
 
 # 5. Encrypted images must be refused with the encrypted-image error.
 for kind in UDIF SPARSE SPARSEBUNDLE; do
@@ -135,58 +136,42 @@ for kind in UDIF SPARSE SPARSEBUNDLE; do
   fi
 done
 
-# 6. Sparse images with more than 1008 bands in use: what the header looks like then. s0 refuses
-# these for now, so a refusal is reported, not failed; the dumps show how hdiutil extends the table.
-dump_sparse() { # file name
-  python3 - "$1" "$W/dumps/$2" <<'EOF'
+# 6. Sparse images with more than 1008 bands in use. Each header maps 1008 bands; hdiutil then
+# writes another header after the last band and links it from offset 20. This one passes 4 GiB,
+# so the link is shown to be 64 bits wide. The dumps keep every header for study.
+cat > dump_sparse.py <<'EOF'
 import struct, sys
 path, out = sys.argv[1], sys.argv[2]
-with open(path, "rb") as f:
-    data = f.read(4096)
+with open(path, "rb") as f, open(out + ".txt", "w") as t:
     f.seek(0, 2)
-    size = f.tell()
-with open(out + ".head", "wb") as o:
-    o.write(data)
-fields = struct.unpack(">4sIIIIIIIIIIIIIII", data[:64])
-used = [i for i, v in enumerate(struct.unpack(">1008I", data[64:4096])) if v]
-with open(out + ".txt", "w") as t:
-    print("file size", size, file=t)
-    print("header words", [hex(x) if isinstance(x, int) else x for x in fields], file=t)
-    print("table entries used", len(used), "last", used[-1:] if used else None, file=t)
-EOF
-}
-rm -f big.sparseimage
-if hdiutil create -quiet -size 1300m -type SPARSE -layout NONE -fs HFS+ -volname Big big >/dev/null &&
-  hdiutil attach -quiet -nobrowse -noverify -mountpoint "$W/mnt" big.sparseimage; then
-  dd if=/dev/urandom of="$W/mnt/fill.bin" bs=1m count=1150 2>/dev/null
-  hdiutil detach -quiet "$W/mnt" || hdiutil detach -force "$W/mnt"
-  dump_sparse big.sparseimage big
-  # Find any further "sprs" headers after the first band table.
-  python3 - big.sparseimage >> "$W/dumps/big.txt" <<'EOF'
-import sys
-band_hint = 1 << 20
-with open(sys.argv[1], "rb") as f:
-    pos = 4096
+    print("file size", f.tell(), file=t)
+    at, k = 0, 0
     while True:
-        f.seek(pos)
-        block = f.read(4096)
-        if not block:
+        f.seek(at)
+        h = f.read(4096)
+        with open(f"{out}.head{k}", "wb") as o:
+            o.write(h)
+        words = struct.unpack(">4s15I", h[:64])
+        used = [v for v in struct.unpack(">1008I", h[64:4096]) if v]
+        print(f"header {k} at {at}:", [hex(x) if isinstance(x, int) else x for x in words], file=t)
+        print(f"  entries used {len(used)}, bands {min(used, default=0)}..{max(used, default=0)}", file=t)
+        nxt = struct.unpack(">Q", h[20:28])[0]
+        if not nxt or nxt <= at:
             break
-        if block.startswith(b"sprs"):
-            print("sprs header at", pos)
-        pos += 4096
+        at, k = nxt, k + 1
 EOF
-  cat "$W/dumps/big.txt"
-  if "$S0" info big.sparseimage > out/big.err 2>&1; then
-    check_image big.sparseimage "sparse-over-1008-bands" yes
-  else
-    echo "note sparse-over-1008-bands refused: $(tail -1 out/big.err)"
-  fi
+rm -f big.sparseimage
+if hdiutil create -quiet -size 4500m -type SPARSE -layout NONE -fs HFS+ -volname Big big >/dev/null &&
+  hdiutil attach -quiet -nobrowse -noverify -mountpoint "$W/mnt" big.sparseimage; then
+  dd if=/dev/urandom of="$W/mnt/fill.bin" bs=1m count=4300 2>/dev/null
+  hdiutil detach -quiet "$W/mnt" || hdiutil detach -force "$W/mnt"
+  python3 dump_sparse.py big.sparseimage "$W/dumps/big" && cat "$W/dumps/big.txt"
+  check_image big.sparseimage "sparse-over-4GiB-chained-headers" no
   rm -f big.sparseimage
 else
   bad "could not build the large sparse image"
 fi
-dump_sparse sparse.sparseimage small && cat "$W/dumps/small.txt"
+python3 dump_sparse.py sparse.sparseimage "$W/dumps/small" && cat "$W/dumps/small.txt"
 
 echo
 echo "$pass passed, $fail failed"

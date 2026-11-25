@@ -678,7 +678,6 @@
   "serial": "sériové č.",
   "size must be positive": "velikost musí být kladná",
   "source and destination are the same file": "zdroj a cíl jsou tentýž soubor",
-  "sparse images with more than {0} bands in use": "řídké obrazy s více než {0} použitými pásmy",
   "start": "začátek",
   "stream-optimized VMDK images are read-only (convert them to another format first)": "obrazy VMDK optimalizované pro proud jsou jen pro čtení (nejprve je převeďte do jiného formátu)",
   "superblock checksum": "kontrolní součet superbloku",
