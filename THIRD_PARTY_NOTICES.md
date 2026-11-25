@@ -27,8 +27,11 @@ Otherwise none. Containers, partition tables, FAT tools (defrag, boot sector, re
 ext2/3/4 are written from the published specifications: Microsoft's FAT specification, the
 VHD and VHDX specifications (MS-VHDX), VMware's Virtual Disk Format 1.1, UEFI (GPT), ECMA-119
 (ISO 9660), Joliet, Rock Ridge (IEEE P1282), El Torito, the ext4 on-disk layout in the
-Linux kernel documentation (Documentation/filesystems/ext4), and partclone's description of
-its image formats (IMAGE_FORMATS.md; no partclone code was read or used). No code from e2fsprogs or Linux
+Linux kernel documentation (Documentation/filesystems/ext4), partclone's description of
+its image formats (IMAGE_FORMATS.md; no partclone code was read or used), and the Keramics
+format notes for Apple disk images (`docs/formats/src/udif.md`, `sparseimage.md`,
+`sparsebundle.md`, `adc.md`; https://github.com/keramics/keramics, Apache-2.0; only the
+documentation was read, no Keramics code). No code from e2fsprogs or Linux
 (both GPL) was used; Linux and e2fsck serve only as test oracles in a virtual machine. The WinImage SDK was used only as an external
 test oracle on a developer machine. None of it is in this repository or linked into the program.
 
@@ -61,6 +64,8 @@ and the files affected. Also keep the original copyright notice in those files.
 | [zstd](https://github.com/gyscos/zstd-rs) (with the zstd C library) | .zst images, zstd QCOW2 clusters | BSD-3-Clause (zstd-sys: BSD-3-Clause AND BSD-2-Clause) |
 | [bzip2](https://github.com/trifectatechfoundation/bzip2-rs) (with libbz2-rs-sys) | .bz2 images | MIT OR Apache-2.0; bzip2-1.0.6 (libbz2-rs-sys) |
 | [aes](https://github.com/RustCrypto/block-ciphers) | Encrypted Macrium Reflect X images | MIT OR Apache-2.0 |
+| [plist](https://github.com/ebarnard/rust-plist) | Property lists in Apple disk images and sparse bundles | MIT |
+| [lzfse_rust](https://github.com/shampoofactory/lzfse_rust) | LZFSE blocks in Apple disk images | MIT OR Apache-2.0 |
 | [ntfs](https://github.com/ColinFinck/ntfs) | Reading NTFS volumes | MIT OR Apache-2.0 |
 | [unicode-normalization](https://github.com/unicode-rs/unicode-normalization) | Composing and decomposing HFS+ names (NFC / NFD) | MIT OR Apache-2.0 |
 

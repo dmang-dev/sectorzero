@@ -5,7 +5,7 @@ window.SZ_LOCALES['uk'] = {
   "New": "Створити",
   "Open an image file (Ctrl+O)": "Відкрити файл образу (Ctrl+O)",
   "Open folder": "Відкрити папку",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "Відкрити папку з резервною копією: резервну копію Windows (WindowsImageBackup) або образ Clonezilla",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "Відкрити папку з резервною копією: резервну копію Windows (WindowsImageBackup), образ Clonezilla або розріджений пакет Apple",
   "Open backup folder": "Відкрити папку з резервною копією",
   "Open": "Відкрити",
   "Open, read or write a USB stick, memory card, floppy or disk": "Відкрити, прочитати або записати USB-накопичувач, карту пам’яті, дискету чи диск",

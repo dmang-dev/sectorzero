@@ -47,6 +47,9 @@ lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "e
 sevenz-rust2 = { version = "0.25", default-features = false, features = ["compress", "util", "bzip2", "deflate"] }
 zstd = { version = "0.14", default-features = false }
 bzip2 = "0.6"
+# Apple disk images: XML property lists (MIT) and LZFSE chunks (MIT OR Apache-2.0, pure Rust).
+plist = { version = "1.10", default-features = false }
+lzfse_rust = "0.2"
 
 # fatfs 0.3.6 with one fix (plain "." and ".." entries); see third_party/fatfs/SECTORZERO-PATCH.md.
 [patch.crates-io]

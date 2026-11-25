@@ -49,6 +49,8 @@ Windows first. Linux builds come from CI; macOS and other platforms come later.
 | Macrium Reflect X backup | `.mrimgx` | ✅ | ❌ | ❌ | ❌ | Full, incremental and differential images (the rest of the backup set is found in the same folder), zstd-compressed and password-encrypted ones; `--member` picks a disk of a multi-disk image. Images from Reflect 8 and older (`.mrimg`) ❌ |
 | Clonezilla / Rescuezilla image | the image folder | ✅ | ❌ | ❌ | ❌ | Whole-disk backups open as the disk (MBR or GPT, put back together from the saved tables), partition backups as the partition; partclone images, compressed (gzip, zstd, xz, bzip2) and split (`.aa`, `.ab`, …); `--member` picks a disk or partition. ntfsclone and partimage images (old backups), lz4 and lzop ❌ |
 | Partclone image | `.ptcl-img`, `-ptcl-img.gz.aa`, … | ✅ | ❌ | ❌ | ❌ | Formats 0001 and 0002, a single piece (split ones open through the Clonezilla folder) |
+| Apple disk image | `.dmg` (+ `.dmgpart` segments) | ✅ | ❌ | ❌ | ❌ | Uncompressed (UDRO), zlib (UDZO), bzip2 (UDBZ), LZFSE (ULFO), xz (ULMO) and ADC (UDCO) images, segmented ones, old images with a resource fork. The volume inside is usually HFS+ (read) or APFS (❌). Encrypted images ❌ |
+| Apple sparse image, sparse bundle | `.sparseimage`, a `.sparsebundle` folder | ✅ | ❌ | ❌ | ❌ | Encrypted ones ❌ |
 | Compressed images | `.gz` `.xz` `.zst` `.bz2`, or a `.zip` / `.7z` holding the image | ✅ | ✅ | ✅ | ✅ | Any format above inside (`disk.img.xz`, `disk.vhd.gz`, a Raspberry Pi `.zip`); unpacked to a temporary folder while open; a `.7z` that holds other files too opens read-only |
 
 "Save as" means another image can be converted to this format; every format that opens can be
@@ -145,6 +147,8 @@ language. Catalogs live in `app/ui/locales/` (checked by `node app/i18n-check.mj
 - **Snapshots:** `qemu-img` and `qemu-io` read VMDK snapshots made here, and SectorZero reads theirs
   (two-level chains, partial grains, stream-optimized VMDK). Differencing VHDX and VDI and
   Windows Backup folders are checked by this project's own tests only so far, as is VHDX.
+- **Apple disk images:** checked by this project's own tests only so far (images built from the
+  published format notes); no image made by `hdiutil` has been tried yet.
 
 **Not yet** (see RESEARCH.md §5): low-level floppy formatting, writing to NTFS, writing to ISO
 images beyond in-place replacement, resizing non-FAT partitions.

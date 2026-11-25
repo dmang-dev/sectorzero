@@ -5,7 +5,7 @@ window.SZ_LOCALES['de'] = {
   "New": "Neu",
   "Open an image file (Ctrl+O)": "Image-Datei öffnen (Ctrl+O)",
   "Open folder": "Ordner öffnen",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "Einen Sicherungsordner öffnen: eine Windows-Sicherung (WindowsImageBackup) oder ein Clonezilla-Image",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "Einen Sicherungsordner öffnen: eine Windows-Sicherung (WindowsImageBackup), ein Clonezilla-Image oder ein Apple-Sparse-Bundle",
   "Open backup folder": "Sicherungsordner öffnen",
   "Open": "Öffnen",
   "Open, read or write a USB stick, memory card, floppy or disk": "USB-Stick, Speicherkarte, Diskette oder Datenträger öffnen, lesen oder beschreiben",

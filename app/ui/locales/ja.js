@@ -5,7 +5,7 @@ window.SZ_LOCALES['ja'] = {
   "New": "新規",
   "Open an image file (Ctrl+O)": "イメージ ファイルを開く (Ctrl+O)",
   "Open folder": "フォルダーを開く",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "バックアップ フォルダーを開きます: Windows バックアップ (WindowsImageBackup) または Clonezilla イメージ",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "バックアップ フォルダーを開きます: Windows バックアップ (WindowsImageBackup)、Clonezilla イメージ、または Apple スパース バンドル",
   "Open backup folder": "バックアップ フォルダーを開く",
   "Open": "開く",
   "Open, read or write a USB stick, memory card, floppy or disk": "USB メモリ、メモリ カード、フロッピー、ディスクを開く、読み取る、書き込む",

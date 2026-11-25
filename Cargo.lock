@@ -2402,6 +2402,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "lzfse_rust"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5edeac3ec657925dececc672bdd58fa2212291886ddcb3e08aa46924c78340c6"
+
+[[package]]
 name = "lzma-rust2"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3517,9 +3523,11 @@ dependencies = [
  "fatfs",
  "flate2",
  "libc",
+ "lzfse_rust",
  "lzma-rust2",
  "md-5",
  "ntfs",
+ "plist",
  "serde",
  "serde_json",
  "sevenz-rust2",

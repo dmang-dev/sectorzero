@@ -5,7 +5,7 @@ window.SZ_LOCALES['nl'] = {
   "New": "Nieuw",
   "Open an image file (Ctrl+O)": "Een imagebestand openen (Ctrl+O)",
   "Open folder": "Map openen",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "Een back-upmap openen: een Windows-back-up (WindowsImageBackup) of een Clonezilla-image",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "Een back-upmap openen: een Windows-back-up (WindowsImageBackup), een Clonezilla-image of een Apple-sparsebundel",
   "Open backup folder": "Back-upmap openen",
   "Open": "Openen",
   "Open, read or write a USB stick, memory card, floppy or disk": "Een USB-stick, geheugenkaart, diskette of schijf openen, lezen of beschrijven",

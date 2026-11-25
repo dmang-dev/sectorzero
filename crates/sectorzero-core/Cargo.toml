@@ -29,6 +29,8 @@ zstd.workspace = true
 bzip2.workspace = true
 aes.workspace = true
 serde_json.workspace = true
+plist.workspace = true
+lzfse_rust.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

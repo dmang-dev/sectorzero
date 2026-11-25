@@ -5,7 +5,7 @@ window.SZ_LOCALES['tr'] = {
   "New": "Yeni",
   "Open an image file (Ctrl+O)": "Görüntü dosyası aç (Ctrl+O)",
   "Open folder": "Klasör aç",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "Bir yedek klasörü açar: Windows yedeği (WindowsImageBackup) veya Clonezilla kalıbı",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "Bir yedek klasörü açar: Windows yedeği (WindowsImageBackup), Clonezilla kalıbı veya Apple seyrek paketi",
   "Open backup folder": "Yedek klasörünü aç",
   "Open": "Aç",
   "Open, read or write a USB stick, memory card, floppy or disk": "USB bellek, bellek kartı, disket veya diski aç, oku ya da yaz",

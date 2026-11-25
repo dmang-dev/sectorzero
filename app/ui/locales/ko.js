@@ -5,7 +5,7 @@ window.SZ_LOCALES['ko'] = {
   "New": "새로 만들기",
   "Open an image file (Ctrl+O)": "이미지 파일 열기 (Ctrl+O)",
   "Open folder": "폴더 열기",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "백업 폴더 열기: Windows 백업(WindowsImageBackup) 또는 Clonezilla 이미지",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "백업 폴더 열기: Windows 백업(WindowsImageBackup), Clonezilla 이미지 또는 Apple 스파스 번들",
   "Open backup folder": "백업 폴더 열기",
   "Open": "열기",
   "Open, read or write a USB stick, memory card, floppy or disk": "USB 메모리, 메모리 카드, 플로피 또는 디스크를 열거나 읽거나 쓰기",

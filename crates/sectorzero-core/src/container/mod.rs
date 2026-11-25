@@ -7,6 +7,7 @@
 mod cd;
 mod clonezilla;
 mod compressed;
+mod dmg;
 mod mrimgx;
 mod partclone;
 mod pc98;
@@ -159,6 +160,12 @@ pub enum ContainerKind {
     Partclone,
     /// A Clonezilla / Rescuezilla image folder (read-only).
     Clonezilla,
+    /// Apple disk image (UDIF `.dmg`, read-only).
+    Dmg,
+    /// Apple sparse image (`.sparseimage`, read-only).
+    SparseImage,
+    /// Apple sparse bundle (a `.sparsebundle` folder, read-only).
+    SparseBundle,
     /// A physical drive (USB stick, memory card, floppy drive, hard disk), read and written
     /// sector for sector.
     Drive,
@@ -194,6 +201,9 @@ impl ContainerKind {
             "nrg" => ContainerKind::Nrg,
             "mds" | "mdf" => ContainerKind::Mds,
             "mrimgx" => ContainerKind::Mrimgx,
+            "dmg" => ContainerKind::Dmg,
+            "sparseimage" => ContainerKind::SparseImage,
+            "sparsebundle" => ContainerKind::SparseBundle,
             _ => ContainerKind::Raw,
         }
     }
@@ -218,6 +228,9 @@ impl ContainerKind {
             ContainerKind::Mrimgx => "Macrium Reflect X image (MRIMGX)",
             ContainerKind::Partclone => "Partclone image",
             ContainerKind::Clonezilla => "Clonezilla image",
+            ContainerKind::Dmg => "Apple disk image (DMG)",
+            ContainerKind::SparseImage => "Apple sparse image",
+            ContainerKind::SparseBundle => "Apple sparse bundle",
             ContainerKind::Drive => "Physical drive",
         }
     }
@@ -242,6 +255,9 @@ impl ContainerKind {
                 | ContainerKind::Mrimgx
                 | ContainerKind::Partclone
                 | ContainerKind::Clonezilla
+                | ContainerKind::Dmg
+                | ContainerKind::SparseImage
+                | ContainerKind::SparseBundle
                 | ContainerKind::Drive
         )
     }
@@ -308,6 +324,15 @@ pub(crate) fn file_len(file: &mut File) -> io::Result<u64> {
     }
 }
 
+fn no_member(member: Option<&str>) -> Result<()> {
+    match member {
+        Some(_) => Err(Error::Invalid(
+            "--member only applies to archives (IMZ, WLZ, ZIP, 7z)".into(),
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Detect the container by content (not extension) and open it.
 pub(crate) fn open(path: &Path, writable: bool, member: Option<&str>) -> Result<Box<dyn Disk>> {
     if crate::device::is_device_path(path) {
@@ -320,8 +345,12 @@ pub(crate) fn open(path: &Path, writable: bool, member: Option<&str>) -> Result<
         if clonezilla::looks_like_clonezilla(path) {
             return Ok(Box::new(clonezilla::ClonezillaDisk::open(path, member)?));
         }
+        if dmg::looks_like_sparsebundle(path) {
+            no_member(member)?;
+            return Ok(Box::new(dmg::SparseBundleDisk::open(path)?));
+        }
         return Err(Error::Invalid(format!(
-            "{} is a folder, not a disk image (folders open only when they hold a Windows backup or a Clonezilla image)",
+            "{} is a folder, not a disk image (folders open only when they hold a Windows backup or a Clonezilla image, or are an Apple sparse bundle)",
             path.display()
         )));
     }
@@ -349,6 +378,15 @@ pub(crate) fn open(path: &Path, writable: bool, member: Option<&str>) -> Result<
     }
     if macrium {
         return Ok(Box::new(mrimgx::MrimgxDisk::open(path, member)?));
+    }
+    if dmg::looks_encrypted(head) {
+        return Err(dmg::encrypted_error());
+    }
+    if len >= 512 && dmg::looks_like_udif(&tail) {
+        return Ok(Box::new(dmg::DmgDisk::open(path, &tail)?));
+    }
+    if dmg::looks_like_sparseimage(head) {
+        return Ok(Box::new(dmg::SparseImageDisk::open(path)?));
     }
     if split::is_split_set(path) {
         return Ok(Box::new(split::SplitDisk::open(path, writable)?));
@@ -499,6 +537,11 @@ pub(crate) fn create(
         ContainerKind::Mrimgx => {
             return Err(Error::Unsupported(
                 "creating Macrium Reflect images (convert to another format instead)".into(),
+            ));
+        }
+        ContainerKind::Dmg | ContainerKind::SparseImage | ContainerKind::SparseBundle => {
+            return Err(Error::Unsupported(
+                "creating Apple disk images (convert to another format instead)".into(),
             ));
         }
         ContainerKind::Partclone | ContainerKind::Clonezilla => {

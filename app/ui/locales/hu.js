@@ -5,7 +5,7 @@ window.SZ_LOCALES['hu'] = {
   "New": "Új",
   "Open an image file (Ctrl+O)": "Lemezképfájl megnyitása (Ctrl+O)",
   "Open folder": "Mappa megnyitása",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "Biztonsági mentés mappájának megnyitása: Windows-biztonsági mentés (WindowsImageBackup) vagy Clonezilla-képfájl",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "Biztonsági mentés mappájának megnyitása: Windows-biztonsági mentés (WindowsImageBackup), Clonezilla-képfájl vagy Apple ritka csomag",
   "Open backup folder": "Biztonsági mentés mappájának megnyitása",
   "Open": "Megnyitás",
   "Open, read or write a USB stick, memory card, floppy or disk": "USB-meghajtó, memóriakártya, hajlékonylemez vagy lemez megnyitása, olvasása vagy írása",

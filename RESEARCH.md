@@ -468,3 +468,24 @@ of the 0002 bitmap is not documented; least significant bit first is assumed. Ch
 against images built in the tests from those descriptions; no real Clonezilla backup or
 partclone binary has been tried (the test guest's ISO has neither). ntfsclone and partimage
 have no published description; they wait for a black-box oracle.
+
+Apple disk images (2026-11-24, `container/dmg.rs`), read-only, from the Keramics format
+notes (Apache-2.0; documentation only). UDIF: a 512-byte big-endian `koly` trailer at the end
+gives the data fork, the XML property list (or, in old images, a resource fork) and the
+segment number and count. Each `blkx` resource is a `mish` block table: a start sector, a base
+offset in the data fork, and 40-byte runs (type, sector, count, offset, length). Types: 0 and 2
+read as zeros (2 is free space), 1 is stored, 0x80000004–8 are ADC, zlib, bzip2, LZFSE and xz,
+0x7ffffffe a comment and 0xffffffff the end. Segments continue the data fork in
+`name.002.dmgpart`, … (checked by segment number and set ID), and a block may cross into the
+next segment. The disk is the runs in sector order, gaps read as zeros, and a compressed run
+is decoded whole (cached). zlib, bzip2 and xz blocks are read to their end so their own checks
+run; LZFSE, ADC and stored blocks have none, and the CRC-32 checksums in the trailer and the
+block tables are not checked yet. Sparse image: `sprs` header, sectors per band at 8, size
+in sectors at 16, and from offset 64 a table where entry *i* holds the media band (plus one)
+stored at 4096 + *i* × band size. What follows when all 1008 entries of the first 4096 bytes
+are used is not described; such images are refused. Sparse bundle: `Info.plist` (`band-size`,
+`size`, bundle type `com.apple.diskimage.sparsebundle`) and `bands/<hex>` files, missing
+or short bands read as zeros; a non-empty `token` means encrypted. Encrypted images
+(`encrcdsa`) are refused. Checked only against images built in the tests from those notes;
+`hdiutil` on a macOS runner is the oracle still to use (UDRO/UDZO/UDBZ/ULFO/ULMO, sparse
+image and bundle, an APM/HFS+ and a GPT/APFS disk).

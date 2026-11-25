@@ -5,7 +5,7 @@ window.SZ_LOCALES['cs'] = {
   "New": "Nový",
   "Open an image file (Ctrl+O)": "Otevřít soubor obrazu (Ctrl+O)",
   "Open folder": "Otevřít složku",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "Otevře složku se zálohou: zálohu Windows (WindowsImageBackup) nebo obraz Clonezilla",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "Otevře složku se zálohou: zálohu Windows (WindowsImageBackup), obraz Clonezilla nebo řídký balíček Apple",
   "Open backup folder": "Otevřít složku se zálohou",
   "Open": "Otevřít",
   "Open, read or write a USB stick, memory card, floppy or disk": "Otevřít, načíst nebo zapsat USB flash disk, paměťovou kartu, disketu nebo disk",

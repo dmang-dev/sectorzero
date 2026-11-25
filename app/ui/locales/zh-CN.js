@@ -5,7 +5,7 @@ window.SZ_LOCALES['zh-CN'] = {
   "New": "新建",
   "Open an image file (Ctrl+O)": "打开映像文件 (Ctrl+O)",
   "Open folder": "打开文件夹",
-  "Open a backup folder: a Windows Backup (WindowsImageBackup) or a Clonezilla image": "打开备份文件夹：Windows 备份（WindowsImageBackup）或 Clonezilla 映像",
+  "Open a backup folder: a Windows Backup (WindowsImageBackup), a Clonezilla image or an Apple sparse bundle": "打开备份文件夹：Windows 备份（WindowsImageBackup）、Clonezilla 映像或 Apple 稀疏捆绑包",
   "Open backup folder": "打开备份文件夹",
   "Open": "打开",
   "Open, read or write a USB stick, memory card, floppy or disk": "打开、读取或写入 U 盘、存储卡、软盘或磁盘",
