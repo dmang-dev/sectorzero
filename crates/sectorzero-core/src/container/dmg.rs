@@ -596,12 +596,15 @@ impl SparseImageDisk {
         }
         let bands = size.div_ceil(band) as usize;
         let mut slots = vec![None; bands];
-        // Each header maps up to 1008 bands, stored right after it. When they are all used,
-        // hdiutil writes another header after the last band and links it from the field at
-        // offset 20 (0: none).
+        // The first header maps up to 1008 bands (table at 64), stored right after it. When
+        // they are all used, hdiutil writes another header after the last band, linked from
+        // offset 20 of the first; each further header is 4096 bytes too, maps up to 1010 bands
+        // (table at 56) and links the next from offset 12 (0: none). Seen on macOS 26.
         let mut at = 0u64;
         loop {
-            for (slot, c) in h[64..].as_chunks::<4>().0.iter().enumerate() {
+            let first = at == 0;
+            let table = if first { &h[64..] } else { &h[56..] };
+            for (slot, c) in table.as_chunks::<4>().0.iter().enumerate() {
                 let b = u32::from_be_bytes(*c);
                 if b == 0 {
                     continue;
@@ -612,7 +615,7 @@ impl SparseImageDisk {
                 }
                 slots[m] = Some(at + 4096 + slot as u64 * band);
             }
-            let next = be64(&h, 20);
+            let next = be64(&h, if first { 20 } else { 12 });
             if next == 0 {
                 break;
             }

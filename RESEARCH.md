@@ -483,9 +483,11 @@ run; LZFSE, ADC and stored blocks have none, and the CRC-32 checksums in the tra
 block tables are not checked yet. Sparse image: `sprs` header, sectors per band at 8, size
 in sectors at 16, and from offset 64 a table where entry *i* holds the media band (plus one)
 stored at 4096 + *i* × band size. When all 1008 entries are used, hdiutil writes another
-header (same layout) right after the last band and links it from the big-endian u64 at
-offset 20 (0 in the last header); seen on macOS 26, where a 1300 MiB image had its second
-header at 4096 + 1008 × 1 MiB. Sparse bundle: `Info.plist` (`band-size`,
+4096-byte header right after the last band and links it from offset 20 of the first (a 64-bit
+big-endian offset, 0 for none). Those later headers differ: `sprs`, 0 at 4, 1 at 8, the link to
+the next one at 12, and a table of 1010 entries from offset 56, their bands stored after them.
+Seen on macOS 26 (a 4.5 GB image: second header at 4096 + 1008 × 1 MiB, third 4096 + 1010 MiB
+after that). Sparse bundle: `Info.plist` (`band-size`,
 `size`, bundle type `com.apple.diskimage.sparsebundle`) and `bands/<hex>` files, missing
 or short bands read as zeros; a non-empty `token` means encrypted. Encrypted images
 (`encrcdsa`) are refused. Cross-checked in CI against `hdiutil` on macOS 26

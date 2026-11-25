@@ -460,31 +460,44 @@ fn sparse_image_and_sparse_bundle() {
     assert_eq!(sum(&spi), want);
     assert_eq!(data_file(&spi), data());
 
-    // More than 1008 bands in use: each further header follows the last band of the one
-    // before and is linked from offset 20, as hdiutil writes them (seen on macOS 26).
+    // More than 1008 bands in use: further headers follow the last band of the one before,
+    // as hdiutil writes them (seen on macOS 26): the first links the next from offset 20,
+    // later ones map 1010 bands from offset 56 and link from offset 12.
     let small = 4096;
     let order: Vec<usize> = (0..raw.len() / small).rev().collect();
+    let mut groups = vec![&order[..1008]];
+    groups.extend(order[1008..].chunks(1010));
     let mut sp = Vec::new();
-    for (k, group) in order.chunks(1008).enumerate() {
+    let mut prev_link: Option<usize> = None;
+    for (k, group) in groups.iter().enumerate() {
         let start = sp.len();
+        if let Some(link) = prev_link {
+            sp[link..link + 8].copy_from_slice(&(start as u64).to_be_bytes());
+        }
         sp.resize(start + 4096, 0);
         let h = &mut sp[start..];
         h[0..4].copy_from_slice(b"sprs");
-        h[4..8].copy_from_slice(&3u32.to_be_bytes());
-        h[8..12].copy_from_slice(&((small / S) as u32).to_be_bytes());
-        h[12..16].copy_from_slice(&1u32.to_be_bytes());
-        h[16..20].copy_from_slice(&((raw.len() / S) as u32).to_be_bytes());
+        let table = if k == 0 {
+            h[4..8].copy_from_slice(&3u32.to_be_bytes());
+            h[8..12].copy_from_slice(&((small / S) as u32).to_be_bytes());
+            h[12..16].copy_from_slice(&1u32.to_be_bytes());
+            h[16..20].copy_from_slice(&((raw.len() / S) as u32).to_be_bytes());
+            prev_link = Some(start + 20);
+            64
+        } else {
+            h[8..12].copy_from_slice(&1u32.to_be_bytes());
+            prev_link = Some(start + 12);
+            56
+        };
         for (slot, &b) in group.iter().enumerate() {
-            h[64 + slot * 4..68 + slot * 4].copy_from_slice(&(b as u32 + 1).to_be_bytes());
+            h[table + slot * 4..table + 4 + slot * 4]
+                .copy_from_slice(&(b as u32 + 1).to_be_bytes());
         }
-        for &b in group {
+        for &b in group.iter() {
             sp.extend_from_slice(&raw[b * small..(b + 1) * small]);
         }
-        if k + 1 < order.len().div_ceil(1008) {
-            let next = sp.len() as u64;
-            sp[start + 20..start + 28].copy_from_slice(&next.to_be_bytes());
-        }
     }
+    assert!(groups.len() >= 3);
     fs::write(&spi, &sp).unwrap();
     assert_eq!(sum(&spi), want);
     assert_eq!(data_file(&spi), data());

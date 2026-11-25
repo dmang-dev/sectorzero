@@ -137,8 +137,9 @@ for kind in UDIF SPARSE SPARSEBUNDLE; do
 done
 
 # 6. Sparse images with more than 1008 bands in use. Each header maps 1008 bands; hdiutil then
-# writes another header after the last band and links it from offset 20. This one passes 4 GiB,
-# so the link is shown to be 64 bits wide. The dumps keep every header for study.
+# writes another header after the last band and links it from offset 20; later headers map 1010
+# bands from offset 56 and link from offset 12. This one has a header past 4 GiB, to show how
+# wide the links are. The dumps keep every header for study.
 cat > dump_sparse.py <<'EOF'
 import struct, sys
 path, out = sys.argv[1], sys.argv[2]
@@ -152,18 +153,18 @@ with open(path, "rb") as f, open(out + ".txt", "w") as t:
         with open(f"{out}.head{k}", "wb") as o:
             o.write(h)
         words = struct.unpack(">4s15I", h[:64])
-        used = [v for v in struct.unpack(">1008I", h[64:4096]) if v]
+        used = [v for v in struct.unpack(">1008I", h[64:4096]) if v] if k == 0 else             [v for v in struct.unpack(">1010I", h[56:4096]) if v]
         print(f"header {k} at {at}:", [hex(x) if isinstance(x, int) else x for x in words], file=t)
         print(f"  entries used {len(used)}, bands {min(used, default=0)}..{max(used, default=0)}", file=t)
-        nxt = struct.unpack(">Q", h[20:28])[0]
+        nxt = struct.unpack(">Q", h[20:28] if k == 0 else h[12:20])[0]
         if not nxt or nxt <= at:
             break
         at, k = nxt, k + 1
 EOF
 rm -f big.sparseimage
-if hdiutil create -quiet -size 4500m -type SPARSE -layout NONE -fs HFS+ -volname Big big >/dev/null &&
+if hdiutil create -quiet -size 5800m -type SPARSE -layout NONE -fs HFS+ -volname Big big >/dev/null &&
   hdiutil attach -quiet -nobrowse -noverify -mountpoint "$W/mnt" big.sparseimage; then
-  dd if=/dev/urandom of="$W/mnt/fill.bin" bs=1m count=4300 2>/dev/null
+  dd if=/dev/urandom of="$W/mnt/fill.bin" bs=1m count=5500 2>/dev/null
   hdiutil detach -quiet "$W/mnt" || hdiutil detach -force "$W/mnt"
   python3 dump_sparse.py big.sparseimage "$W/dumps/big" && cat "$W/dumps/big.txt"
   check_image big.sparseimage "sparse-over-4GiB-chained-headers" no
