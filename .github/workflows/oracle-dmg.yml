@@ -1,0 +1,47 @@
+name: Apple disk image oracle
+
+# hdiutil on macOS builds disk images in every format it offers; s0 must read each one like
+# hdiutil's own raw conversion. See .github/oracle/hdiutil.sh.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - crates/sectorzero-core/src/container/dmg.rs
+      - .github/oracle/hdiutil.sh
+      - .github/workflows/oracle-dmg.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  hdiutil:
+    name: hdiutil images
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build s0
+        run: cargo build --release --locked -p sectorzero-cli
+
+      - name: Cross-check with hdiutil
+        run: bash .github/oracle/hdiutil.sh target/release/s0 "$RUNNER_TEMP/dmg-oracle"
+
+      - name: Upload headers and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dmg-oracle
+          path: |
+            ${{ runner.temp }}/dmg-oracle/dumps
+            ${{ runner.temp }}/dmg-oracle/out/*.info
+            ${{ runner.temp }}/dmg-oracle/out/*.err
+            ${{ runner.temp }}/dmg-oracle/out/*.diff
+          if-no-files-found: warn
