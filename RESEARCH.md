@@ -484,10 +484,10 @@ block tables are not checked yet. Sparse image: `sprs` header, sectors per band 
 in sectors at 16, and from offset 64 a table where entry *i* holds the media band (plus one)
 stored at 4096 + *i* × band size. When all 1008 entries are used, hdiutil writes another
 4096-byte header right after the last band and links it from offset 20 of the first (a 64-bit
-big-endian offset, 0 for none). Those later headers differ: `sprs`, 0 at 4, 1 at 8, the link to
-the next one at 12, and a table of 1010 entries from offset 56, their bands stored after them.
-Seen on macOS 26 (a 4.5 GB image: second header at 4096 + 1008 × 1 MiB, third 4096 + 1010 MiB
-after that). Sparse bundle: `Info.plist` (`band-size`,
+big-endian offset, 0 for none). Those later headers differ: `sprs`, their number counting from 0
+at 4, 1 at 8, the 64-bit link to the next one at 12, and a table of 1010 entries from offset 56,
+their bands stored after them. Seen on macOS 26 (a 5.8 GB image: second header at 4096 + 1008 ×
+1 MiB, each further one 4096 + 1010 MiB after the one before, the fifth link past 4 GiB). Sparse bundle: `Info.plist` (`band-size`,
 `size`, bundle type `com.apple.diskimage.sparsebundle`) and `bands/<hex>` files, missing
 or short bands read as zeros; a non-empty `token` means encrypted. Encrypted images
 (`encrcdsa`) are refused. Cross-checked in CI against `hdiutil` on macOS 26
@@ -496,3 +496,28 @@ or short bands read as zeros; a non-empty `token` means encrypted. Encrypted ima
 and encrypted UDIF, sparse image and sparse bundle (refused), all byte-identical to hdiutil's
 UDTO conversion. Still unchecked: the CRC-32 checksums, and images whose blocks only a
 resource fork describes (current hdiutil always writes the XML plist).
+
+EnCase evidence files (2026-11-25, `container/ewf.rs`), read-only, from libyal's "Expert
+Witness Compression Format (EWF)" document (documentation only). A segment file is a 13-byte
+header (`EVF	
+ÿ `, 1, segment number u16, 0) and a chain of sections, each
+with a 76-byte descriptor (type, next offset, size, Adler-32 of the first 72 bytes). The
+`volume` section (or `disk`, or the `data` copy in later segments) gives sectors per chunk,
+bytes per sector and the sector count: 1052 bytes in EnCase-style files (64-bit count at 16),
+94 bytes ending in `SMART` in SMART/EWF files (32-bit count). `table` sections hold 32-bit chunk
+offsets (relative to the u64 base at 8 in EnCase 6 and later; that field is 0 before), the top
+bit marking a zlib chunk; a stored chunk is followed by its Adler-32. A chunk ends at the next
+entry, or at the next section. `table2` repeats the table and is used when the table fails
+its checksum. `next` ends a segment with more to follow, `done` the last. Names run `.E01` …
+`.E99`, `.EAA` … `.EZZ`, `.FAA` …, keeping the case of the first file. Seen in ewfacquire
+files: SMART and EWF tables have no footer checksum, and their chunks follow the entries
+inside the table section; EnCase 1 tables have the footer and then the chunks. EnCase 6.7.1's
+offsets past 2 GiB (running into the compression bit) are read as 32-bit stored offsets once the
+31-bit values go backwards; no such file has been tried. Logical `.L01` files (`LVF`) and EnCase
+7 `.Ex01`/`.Lx01` (`EVF2`/`LEF2`, EWF version 2) are refused: ewfacquire 20140814 cannot write
+version 2, so there is no oracle for it yet. The `hash`/`digest` MD5 and SHA-1, the case
+details in `header`/`header2`, and `error2` read-error lists are not shown yet. Cross-checked in
+CI against ewfacquire (`.github/oracle/ewfacquire.sh`, workflow `oracle-ewf.yml`): all 14
+formats it writes, the compression levels, chunks of 16–32768 sectors, 4096-byte sectors, an
+odd size, 1 MiB segments (155 files, past `.E99`), damaged chunks, a later or missing segment.
+Five small ewfacquire files are in `tests/data/ewf`.

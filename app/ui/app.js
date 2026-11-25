@@ -12,7 +12,7 @@ const dialog = {
 const { getCurrentWebview } = window.__TAURI__.webview;
 
 const IMAGE_EXTS = ['ima', 'img', 'vfd', 'flp', 'dsk', 'imz', 'wlz', 'vhd', 'vud', 'avhd', 'vhdx', 'avhdx', 'vmdk', 'vdi', 'qcow2', '001',
-  'nhd', 'hdi', 'fdi', 'iso', 'cue', 'bin', 'nrg', 'mds', 'mdf', 'gz', 'xz', 'zst', 'bz2', 'zip', '7z', 'ova', 'mrimgx', 'dmg', 'sparseimage'];
+  'nhd', 'hdi', 'fdi', 'iso', 'cue', 'bin', 'nrg', 'mds', 'mdf', 'gz', 'xz', 'zst', 'bz2', 'zip', '7z', 'ova', 'mrimgx', 'dmg', 'sparseimage', 'e01', 's01'];
 const allFiles = () => ({ name: t('All files'), extensions: ['*'] });
 const imageFilters = () => [{ name: t('Disk images'), extensions: IMAGE_EXTS }, allFiles()];
 const CONTAINER_EXT = {

@@ -40,7 +40,7 @@ struct Cli {
 
 #[derive(clap::Args)]
 struct Img {
-    /// Image file: .ima .img .imz .vhd .vhdx .vmdk .vdi .qcow2 .iso .cue .nrg .mrimgx .dmg .img.gz .zip …, or a block device
+    /// Image file: .ima .img .imz .vhd .vhdx .vmdk .vdi .qcow2 .iso .cue .nrg .mrimgx .dmg .E01 .img.gz .zip …, or a block device
     image: PathBuf,
     /// Partition number (MBR 1-4 primary, 5+ logical; GPT entry). Default: the first FAT partition.
     #[arg(short, long)]

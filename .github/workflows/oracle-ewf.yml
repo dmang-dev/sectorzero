@@ -1,0 +1,53 @@
+name: EnCase image oracle
+
+# ewfacquire (libewf's ewf-tools, run as a black-box tool) builds EnCase evidence files in every
+# format it writes; s0 must read each one like the source disk. See .github/oracle/ewfacquire.sh.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'oracle/**']
+    paths:
+      - crates/sectorzero-core/src/container/ewf.rs
+      - .github/oracle/ewfacquire.sh
+      - .github/workflows/oracle-ewf.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ewfacquire:
+    name: ewfacquire images
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install ewf-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ewf-tools
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build s0
+        run: cargo build --release --locked -p sectorzero-cli
+
+      - name: Cross-check with ewfacquire
+        run: bash .github/oracle/ewfacquire.sh target/release/s0 "$RUNNER_TEMP/ewf-oracle"
+
+      - name: Upload samples and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ewf-oracle
+          path: |
+            ${{ runner.temp }}/ewf-oracle/samples
+            ${{ runner.temp }}/ewf-oracle/out/*.info
+            ${{ runner.temp }}/ewf-oracle/out/*.err
+            ${{ runner.temp }}/ewf-oracle/out/*.diff
+            ${{ runner.temp }}/ewf-oracle/out/*.acquire
+          if-no-files-found: warn

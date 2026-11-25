@@ -31,7 +31,10 @@ Linux kernel documentation (Documentation/filesystems/ext4), partclone's descrip
 its image formats (IMAGE_FORMATS.md; no partclone code was read or used), and the Keramics
 format notes for Apple disk images (`docs/formats/src/udif.md`, `sparseimage.md`,
 `sparsebundle.md`, `adc.md`; https://github.com/keramics/keramics, Apache-2.0; only the
-documentation was read, no Keramics code). No code from e2fsprogs or Linux
+documentation was read, no Keramics code), and libyal's "Expert Witness Compression Format
+(EWF)" document for EnCase evidence files (`documentation/` in https://github.com/libyal/libewf;
+only that document was read, no libewf code, which is LGPL; ewfacquire from libewf serves only
+as a black-box test oracle in CI). No code from e2fsprogs or Linux
 (both GPL) was used; Linux and e2fsck serve only as test oracles in a virtual machine. The WinImage SDK was used only as an external
 test oracle on a developer machine. None of it is in this repository or linked into the program.
 

@@ -8,6 +8,7 @@ mod cd;
 mod clonezilla;
 mod compressed;
 mod dmg;
+mod ewf;
 mod mrimgx;
 mod partclone;
 mod pc98;
@@ -166,6 +167,8 @@ pub enum ContainerKind {
     SparseImage,
     /// Apple sparse bundle (a `.sparsebundle` folder, read-only).
     SparseBundle,
+    /// EnCase / Expert Witness evidence file (`.E01`, SMART `.s01`; read-only).
+    Ewf,
     /// A physical drive (USB stick, memory card, floppy drive, hard disk), read and written
     /// sector for sector.
     Drive,
@@ -204,6 +207,7 @@ impl ContainerKind {
             "dmg" => ContainerKind::Dmg,
             "sparseimage" => ContainerKind::SparseImage,
             "sparsebundle" => ContainerKind::SparseBundle,
+            "e01" | "s01" | "ex01" => ContainerKind::Ewf,
             _ => ContainerKind::Raw,
         }
     }
@@ -231,6 +235,7 @@ impl ContainerKind {
             ContainerKind::Dmg => "Apple disk image (DMG)",
             ContainerKind::SparseImage => "Apple sparse image",
             ContainerKind::SparseBundle => "Apple sparse bundle",
+            ContainerKind::Ewf => "EnCase evidence file (E01)",
             ContainerKind::Drive => "Physical drive",
         }
     }
@@ -258,6 +263,7 @@ impl ContainerKind {
                 | ContainerKind::Dmg
                 | ContainerKind::SparseImage
                 | ContainerKind::SparseBundle
+                | ContainerKind::Ewf
                 | ContainerKind::Drive
         )
     }
@@ -387,6 +393,9 @@ pub(crate) fn open(path: &Path, writable: bool, member: Option<&str>) -> Result<
     }
     if dmg::looks_like_sparseimage(head) {
         return Ok(Box::new(dmg::SparseImageDisk::open(path)?));
+    }
+    if ewf::looks_like_ewf(head) {
+        return Ok(Box::new(ewf::EwfDisk::open(path)?));
     }
     if split::is_split_set(path) {
         return Ok(Box::new(split::SplitDisk::open(path, writable)?));
@@ -542,6 +551,11 @@ pub(crate) fn create(
         ContainerKind::Dmg | ContainerKind::SparseImage | ContainerKind::SparseBundle => {
             return Err(Error::Unsupported(
                 "creating Apple disk images (convert to another format instead)".into(),
+            ));
+        }
+        ContainerKind::Ewf => {
+            return Err(Error::Unsupported(
+                "creating EnCase images (convert to another format instead)".into(),
             ));
         }
         ContainerKind::Partclone | ContainerKind::Clonezilla => {

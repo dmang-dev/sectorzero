@@ -51,6 +51,7 @@ Windows first. Linux builds come from CI; macOS and other platforms come later.
 | Partclone image | `.ptcl-img`, `-ptcl-img.gz.aa`, … | ✅ | ❌ | ❌ | ❌ | Formats 0001 and 0002, a single piece (split ones open through the Clonezilla folder) |
 | Apple disk image | `.dmg` (+ `.dmgpart` segments) | ✅ | ❌ | ❌ | ❌ | Uncompressed (UDRO), zlib (UDZO), bzip2 (UDBZ), LZFSE (ULFO), xz (ULMO) and ADC (UDCO) images, segmented ones, old images with a resource fork. The volume inside is usually HFS+ (read) or APFS (❌). Encrypted images ❌ |
 | Apple sparse image, sparse bundle | `.sparseimage`, a `.sparsebundle` folder | ✅ | ❌ | ❌ | ❌ | Encrypted ones ❌ |
+| EnCase evidence file | `.E01` (+ `.E02` … `.EAA` … segments), SMART `.s01` | ✅ | ❌ | ❌ | ❌ | EnCase 1–7, FTK Imager, linen and ewfacquire images, any compression and chunk size. EnCase 7 `.Ex01` and logical `.L01` files ❌ |
 | Compressed images | `.gz` `.xz` `.zst` `.bz2`, or a `.zip` / `.7z` holding the image | ✅ | ✅ | ✅ | ✅ | Any format above inside (`disk.img.xz`, `disk.vhd.gz`, a Raspberry Pi `.zip`); unpacked to a temporary folder while open; a `.7z` that holds other files too opens read-only |
 
 "Save as" means another image can be converted to this format; every format that opens can be
@@ -152,6 +153,12 @@ language. Catalogs live in `app/ui/locales/` (checked by `node app/i18n-check.mj
   over 4 GiB with chained headers) and sparse bundles read byte for byte like hdiutil's raw
   conversion, on GPT, APM, MBR and bare disks, and the HFS+, FAT32 and exFAT files inside match.
   Encrypted images are refused. APFS volumes open as disks only.
+- **EnCase evidence files:** checked against `ewfacquire` (libewf's ewf-tools 20140814, as a
+  black-box tool) on Ubuntu in CI (`.github/oracle/ewfacquire.sh`): every format it writes
+  (EWF, SMART, FTK, EnCase 1–7, linen 5–7, EWFX), no/fast/best/empty-block compression, chunks
+  of 16 to 32768 sectors, 4096-byte sectors, odd sizes and up to 155 segment files read byte
+  for byte like the source disk, and damaged chunks are reported. No file from EnCase or FTK
+  Imager itself has been tried yet.
 
 **Not yet** (see RESEARCH.md §5): low-level floppy formatting, writing to NTFS, writing to ISO
 images beyond in-place replacement, resizing non-FAT partitions.
