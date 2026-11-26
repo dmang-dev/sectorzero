@@ -114,17 +114,26 @@ dev=$(attach multi-rw.dmg)
 python3 "$TREE" populate "$W/root/SZ Multi" --tiny
 container=$(diskutil info -plist "$W/root/SZ Multi" | plutil -extract APFSContainerReference raw -)
 echo "container $container"
-mkdir -p "$W/root/Second"
-diskutil apfs addVolume "$container" APFS "Second" -mountpoint "$W/root/Second" > out/addvolume.log 2>&1 ||
+# New volumes mount where macOS puts them (a custom mount point needs root).
+diskutil apfs addVolume "$container" APFS "Second" > out/addvolume.log 2>&1 ||
   bad "could not add the second volume: $(tail -2 out/addvolume.log | tr '\n' ' ')"
-printf 'second volume\n' > "$W/root/Second/second.txt"
-mkdir -p "$W/root/Second/Dir" && printf 'nested\n' > "$W/root/Second/Dir/nested.txt"
+second=$(diskutil apfs list -plist "$container" | python3 -c '
+import plistlib, sys
+d = plistlib.load(sys.stdin.buffer)
+print([v["DeviceIdentifier"] for c in d["Containers"] for v in c["Volumes"] if v["Name"] == "Second"][0])')
+second=$(diskutil info -plist "$second" | plutil -extract MountPoint raw -)
+echo "second volume at $second"
+printf 'second volume\n' > "$second/second.txt"
+mkdir -p "$second/Dir" && printf 'nested\n' > "$second/Dir/nested.txt"
 diskutil apfs addVolume "$container" APFS "Locked" -passphrase "sz-oracle-test" >> out/addvolume.log 2>&1 ||
   bad "could not add the encrypted volume: $(tail -2 out/addvolume.log | tr '\n' ' ')"
 diskutil apfs list "$container" | grep -E 'Name:|Role|FileVault' || true
 detach "$dev"
-hdiutil convert -quiet multi-rw.dmg -format ULMO -o multi.dmg > /dev/null && rm -f multi-rw.dmg
+hdiutil convert -quiet multi-rw.dmg -format ULMO -o multi.dmg > out/convert.log 2>&1 ||
+  bad "could not convert the three-volume image: $(tail -2 out/convert.log | tr '\n' ' ')"
+rm -f multi-rw.dmg
 dev=$(attach multi.dmg -readonly)
+ls "$W/root"
 "$S0" info multi.dmg > out/multi.info 2>&1
 cat out/multi.info
 check multi.dmg "SZ Multi"
