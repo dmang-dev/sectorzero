@@ -246,7 +246,7 @@ def compare(ref, out, forks):
         else:
             got[key] = {"type": "file", "size": st.st_size, "sha256": sha(p),
                         "mtime": st.st_mtime_ns // 1_000_000_000}
-    problems = []
+    problems = [] if want else [f"nothing to compare: {ref} is empty"]
     for k in sorted(set(want) - set(got)):
         problems.append(f"missing: {k}")
     for k in sorted(set(got) - set(want)):

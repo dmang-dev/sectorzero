@@ -34,7 +34,10 @@ format notes for Apple disk images (`docs/formats/src/udif.md`, `sparseimage.md`
 documentation was read, no Keramics code), and libyal's "Expert Witness Compression Format
 (EWF)" document for EnCase evidence files (`documentation/` in https://github.com/libyal/libewf;
 only that document was read, no libewf code, which is LGPL; ewfacquire from libewf serves only
-as a black-box test oracle in CI). No code from e2fsprogs or Linux
+as a black-box test oracle in CI), and Apple's "Apple File System Reference" for APFS (the
+decmpfs compression layout, which that reference does not cover, follows public descriptions
+of the format and was confirmed against files macOS compressed; `afsctool` and `ditto` only
+compress test files in CI, as black-box tools). No code from e2fsprogs or Linux
 (both GPL) was used; Linux and e2fsck serve only as test oracles in a virtual machine. The WinImage SDK was used only as an external
 test oracle on a developer machine. None of it is in this repository or linked into the program.
 

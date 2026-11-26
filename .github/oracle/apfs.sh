@@ -111,20 +111,26 @@ detach "$dev"
 # one volume per 512 MiB, so it has to be this large.)
 hdiutil create -quiet -size 1100m -fs APFS -volname "SZ Multi" -layout GPTSPUD -type UDIF multi-rw.dmg
 dev=$(attach multi-rw.dmg)
-python3 "$TREE" populate "$W/root/SZ Multi" --tiny
+printf 'first volume\n' > "$W/root/SZ Multi/first.txt"
+mkdir -p "$W/root/SZ Multi/Folder" && seq 1 3000 > "$W/root/SZ Multi/Folder/numbers.txt"
 container=$(diskutil info -plist "$W/root/SZ Multi" | plutil -extract APFSContainerReference raw -)
 echo "container $container"
-# New volumes mount where macOS puts them (a custom mount point needs root).
+# A custom mount point needs root: the new volume is mounted where macOS puts it.
 diskutil apfs addVolume "$container" APFS "Second" > out/addvolume.log 2>&1 ||
   bad "could not add the second volume: $(tail -2 out/addvolume.log | tr '\n' ' ')"
-second=$(diskutil apfs list -plist "$container" | python3 -c '
+second_dev=$(diskutil apfs list -plist "$container" | python3 -c '
 import plistlib, sys
 d = plistlib.load(sys.stdin.buffer)
 print([v["DeviceIdentifier"] for c in d["Containers"] for v in c["Volumes"] if v["Name"] == "Second"][0])')
-second=$(diskutil info -plist "$second" | plutil -extract MountPoint raw -)
-echo "second volume at $second"
-printf 'second volume\n' > "$second/second.txt"
-mkdir -p "$second/Dir" && printf 'nested\n' > "$second/Dir/nested.txt"
+diskutil mount "$second_dev" >> out/addvolume.log 2>&1
+second=$(diskutil info -plist "$second_dev" | plutil -extract MountPoint raw -)
+echo "second volume $second_dev at $second"
+if [ -n "$second" ] && [ -d "$second" ]; then
+  printf 'second volume\n' > "$second/second.txt"
+  mkdir -p "$second/Dir" && printf 'nested\n' > "$second/Dir/nested.txt"
+else
+  bad "the second volume did not mount: $(tail -2 out/addvolume.log | tr '\n' ' ')"
+fi
 diskutil apfs addVolume "$container" APFS "Locked" -passphrase "sz-oracle-test" >> out/addvolume.log 2>&1 ||
   bad "could not add the encrypted volume: $(tail -2 out/addvolume.log | tr '\n' ' ')"
 diskutil apfs list "$container" | grep -E 'Name:|Role|FileVault' || true

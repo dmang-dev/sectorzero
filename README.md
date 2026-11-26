@@ -50,7 +50,7 @@ Windows first. Linux builds come from CI; macOS and other platforms come later.
 | Macrium Reflect X backup | `.mrimgx` | ✅ | ❌ | ❌ | ❌ | Full, incremental and differential images (the rest of the backup set is found in the same folder), zstd-compressed and password-encrypted ones; `--member` picks a disk of a multi-disk image. Images from Reflect 8 and older (`.mrimg`) ❌ |
 | Clonezilla / Rescuezilla image | the image folder | ✅ | ❌ | ❌ | ❌ | Whole-disk backups open as the disk (MBR or GPT, put back together from the saved tables), partition backups as the partition; partclone images, compressed (gzip, zstd, xz, bzip2) and split (`.aa`, `.ab`, …); `--member` picks a disk or partition. ntfsclone and partimage images (old backups), lz4 and lzop ❌ |
 | Partclone image | `.ptcl-img`, `-ptcl-img.gz.aa`, … | ✅ | ❌ | ❌ | ❌ | Formats 0001 and 0002, a single piece (split ones open through the Clonezilla folder) |
-| Apple disk image | `.dmg` (+ `.dmgpart` segments) | ✅ | ❌ | ❌ | ❌ | Uncompressed (UDRO), zlib (UDZO), bzip2 (UDBZ), LZFSE (ULFO), xz (ULMO) and ADC (UDCO) images, segmented ones, old images with a resource fork. The volume inside is usually HFS+ (read) or APFS (❌). Encrypted images ❌ |
+| Apple disk image | `.dmg` (+ `.dmgpart` segments) | ✅ | ❌ | ❌ | ❌ | Uncompressed (UDRO), zlib (UDZO), bzip2 (UDBZ), LZFSE (ULFO), xz (ULMO) and ADC (UDCO) images, segmented ones, old images with a resource fork. The volume inside is usually HFS+ or APFS (both read). Encrypted images ❌ |
 | Apple sparse image, sparse bundle | `.sparseimage`, a `.sparsebundle` folder | ✅ | ❌ | ❌ | ❌ | Encrypted ones ❌ |
 | EnCase evidence file | `.E01` (+ `.E02` … `.EAA` … segments), SMART `.s01` | ✅ | ❌ | ❌ | ❌ | EnCase 1–7, FTK Imager, linen and ewfacquire images, any compression and chunk size. EnCase 7 `.Ex01` and logical `.L01` files ❌ |
 | Compressed images | `.gz` `.xz` `.zst` `.bz2`, or a `.zip` / `.7z` holding the image | ✅ | ✅ | ✅ | ✅ | Any format above inside (`disk.img.xz`, `disk.vhd.gz`, a Raspberry Pi `.zip`); unpacked to a temporary folder while open; a `.7z` that holds other files too opens read-only |
@@ -66,6 +66,7 @@ converted from.
 | exFAT | ✅ | ✅ | ✅ | ✅ | From 1 MiB; TexFAT volumes and volumes not cleanly unmounted open read-only |
 | ext2 / ext3 / ext4 | ✅ | ✅ | ✅ | ✅ | Read-only flag and times; inline data, encryption, bigalloc, quotas and casefolding open read-only |
 | HFS / HFS+ / HFSX (Mac) | ✅ | ✅ | ✅ | ✅ | Resource forks and Finder info (as AppleDouble or MacBinary), hard links; journaled HFS+ opens read-only |
+| APFS (Mac) | ✅ | ❌ | ❌ | view only | Containers with several volumes (`--volume` picks one); files macOS compressed (zlib, LZVN, LZFSE), symlinks, hard links, resource forks and Finder info (as AppleDouble or MacBinary). Encrypted and sealed system volumes ❌ |
 | NTFS | ✅ | ❌ | ❌ | view only | Compressed and encrypted files are refused |
 | ISO 9660 + Joliet + Rock Ridge | ✅ | ⚠️ | ✅ | view only | Replace a file in place; El Torito boot images |
 
@@ -242,6 +243,7 @@ s0 new linux.img -s 256M -t mbr --fs ext4     # ext2/ext3/ext4 instead of FAT; i
 s0 new stick.img -s 8G -t mbr --fs exfat -l DATA   # exFAT
 s0 new mac.img -f zip100 --fs hfs -l Zip     # Mac-formatted Zip (Apple partition map); -f 1440 --fs hfs for a Mac floppy
 s0 extract mac.img -o .\out --forks appledouble   # Mac resource forks as ._ files (or macbinary); inject takes the same
+s0 ls backup.dmg --volume Data              # one volume of an APFS container (number or name; info lists them)
 s0 inject boot.ima .\files\* --to /tools     # copy files in (folders recurse)
 s0 ls boot.ima -r                            # list everything
 s0 extract boot.ima /tools -o .\out          # copy out (no path = everything)
@@ -277,7 +279,8 @@ s0 iso .\cdroot cd.iso -l MYCD -b boot.ima   # bootable ISO (--efi, --no-emulati
 s0 boot-image cd.iso -o boot.ima
 ```
 
-Add `--json` to any command for machine-readable output. For WLZ files, `--member` picks the image.
+Add `--json` to any command for machine-readable output. For WLZ files, `--member` picks the image;
+for APFS containers, `--volume` picks the volume.
 `--lang de` (or any of the languages above) translates messages and `--help`; JSON output stays as is.
 
 ## License policy
