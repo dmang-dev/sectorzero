@@ -7,7 +7,8 @@ hard disk, virtual machine and CD image formats (see Status below).
 SectorZero is an independent project. It is not affiliated with, endorsed by or sponsored by
 any of the companies or projects whose products, file formats or hardware it names or works
 with, including Gilles Vollant Software (WinImage), Microsoft (Windows, Virtual PC, Hyper-V),
-VMware, Oracle (VirtualBox), Apple, Iomega, Imation, SyQuest, NEC, Nero and Alcohol Soft. All
+VMware, Oracle (VirtualBox), Apple, OpenText (EnCase), Exterro (FTK Imager), Paramount Software
+(Macrium Reflect), Iomega, Imation, SyQuest, NEC, Nero and Alcohol Soft. All
 product names and trademarks belong to their owners and are used only to identify the file
 formats, media and devices SectorZero works with.
 

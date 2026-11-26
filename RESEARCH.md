@@ -499,8 +499,7 @@ resource fork describes (current hdiutil always writes the XML plist).
 
 EnCase evidence files (2026-11-25, `container/ewf.rs`), read-only, from libyal's "Expert
 Witness Compression Format (EWF)" document (documentation only). A segment file is a 13-byte
-header (`EVF	
-ÿ `, 1, segment number u16, 0) and a chain of sections, each
+header (`EVF\x09\x0d\x0a\xff\x00`, 1, segment number u16, 0) and a chain of sections, each
 with a 76-byte descriptor (type, next offset, size, Adler-32 of the first 72 bytes). The
 `volume` section (or `disk`, or the `data` copy in later segments) gives sectors per chunk,
 bytes per sector and the sector count: 1052 bytes in EnCase-style files (64-bit count at 16),
