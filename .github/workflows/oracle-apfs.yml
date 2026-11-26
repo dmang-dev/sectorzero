@@ -1,0 +1,49 @@
+name: APFS oracle
+
+# macOS builds APFS volumes in disk images and fills them with files; s0 must extract them as
+# macOS shows them when mounted. See .github/oracle/apfs.sh.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'oracle/**']
+    paths:
+      - crates/sectorzero-core/src/apfs.rs
+      - crates/sectorzero-core/src/apfs/**
+      - .github/oracle/apfs.sh
+      - .github/oracle/apfs_tree.py
+      - .github/workflows/oracle-apfs.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  apfs:
+    name: APFS volumes
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build s0
+        run: cargo build --release --locked -p sectorzero-cli
+
+      - name: Cross-check with macOS
+        run: bash .github/oracle/apfs.sh target/release/s0 "$RUNNER_TEMP/apfs-oracle"
+
+      - name: Upload samples and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: apfs-oracle
+          path: |
+            ${{ runner.temp }}/apfs-oracle/samples
+            ${{ runner.temp }}/apfs-oracle/out/*.info
+            ${{ runner.temp }}/apfs-oracle/out/*.diff
+            ${{ runner.temp }}/apfs-oracle/out/*.extract
+          if-no-files-found: warn
