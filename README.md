@@ -154,7 +154,16 @@ language. Catalogs live in `app/ui/locales/` (checked by `node app/i18n-check.mj
   UDRO, UDCO, UDZO, UDBZ, ULFO and ULMO images, split `.dmgpart` sets, sparse images (also one
   over 4 GiB with chained headers) and sparse bundles read byte for byte like hdiutil's raw
   conversion, on GPT, APM, MBR and bare disks, and the HFS+, FAT32 and exFAT files inside match.
-  Encrypted images are refused. APFS volumes open as disks only.
+  Encrypted images are refused.
+- **APFS:** checked against macOS 26 in CI (`.github/oracle/apfs.sh`): macOS fills APFS volumes
+  in disk images with 5,000 files in one folder, large, sparse and fragmented files, files
+  rewritten or deleted after a sync, symlinks, hard links, extended attributes, resource forks,
+  Finder info, the hidden flag, Unicode and 200-character names, and files compressed with zlib,
+  LZVN and LZFSE (by `afsctool` and `ditto`, kept in the attribute or the resource fork). The
+  files SectorZero extracts (contents, dates, link targets, AppleDouble forks) match what macOS
+  shows with the image mounted, on case-insensitive and case-sensitive volumes. In a container
+  with three volumes each opens by number or name, and the encrypted one is refused. Snapshots,
+  sealed system volumes and images of real Macs have not been tried yet.
 - **EnCase evidence files:** checked against `ewfacquire` (libewf's ewf-tools 20140814, as a
   black-box tool) on Ubuntu in CI (`.github/oracle/ewfacquire.sh`): every format it writes
   (EWF, SMART, FTK, EnCase 1–7, linen 5–7, EWFX), no/fast/best/empty-block compression, chunks

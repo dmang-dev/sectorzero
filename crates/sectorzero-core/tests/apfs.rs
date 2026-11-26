@@ -43,6 +43,63 @@ fn sha(b: &[u8]) -> String {
         .collect()
 }
 
+/// Every file in a manifest has the same contents in `v`, and `v` has nothing else.
+fn assert_files(v: &Volume, manifest: &str) {
+    let manifest: serde_json::Map<String, Value> =
+        serde_json::from_str(&fs::read_to_string(data(manifest)).unwrap()).unwrap();
+    let mut listed = v
+        .walk("")
+        .unwrap()
+        .into_iter()
+        .map(|e| e.path)
+        .filter(|p| !p.starts_with(".fseventsd"))
+        .collect::<Vec<_>>();
+    listed.sort();
+    let mut want = manifest.keys().cloned().collect::<Vec<_>>();
+    want.sort();
+    assert_eq!(listed, want);
+    for (path, e) in &manifest {
+        if e["type"] == "file" {
+            let sum = v.checksum(path).unwrap();
+            assert_eq!(sum.sha256, e["sha256"].as_str().unwrap(), "{path}");
+        }
+    }
+}
+
+#[test]
+fn three_volume_container() {
+    let multi = data("multi.dmg");
+    let v = open(&multi, None).unwrap();
+    let info = v.info().unwrap();
+    let vols = &info.apfs.as_ref().unwrap().volumes;
+    let summary: Vec<_> = vols
+        .iter()
+        .map(|v| (v.index, v.name.as_str(), v.encrypted, v.open))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (1, "SZ Multi", false, true),
+            (2, "Second", false, false),
+            (3, "Locked", true, false)
+        ]
+    );
+    assert_eq!(info.label, "SZ Multi");
+    assert_files(&v, "multi-1.json");
+    for pick in ["2", "Second", "second"] {
+        let v = open(&multi, Some(pick)).unwrap();
+        assert_eq!(v.info().unwrap().label, "Second", "{pick}");
+        assert_files(&v, "multi-2.json");
+    }
+    for pick in ["3", "Locked"] {
+        let err = open(&multi, Some(pick)).err().unwrap();
+        assert!(matches!(err, Error::Unsupported(_)), "{err}");
+        assert!(err.to_string().contains("encrypted APFS volumes"), "{err}");
+    }
+    let err = open(&multi, Some("4")).err().unwrap();
+    assert!(err.to_string().contains("2 Second, 3 Locked"), "{err}");
+}
+
 #[test]
 fn sample_volume_matches_macos() {
     let v = open(&data("sample.dmg"), None).unwrap();
