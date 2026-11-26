@@ -22,6 +22,8 @@ pub struct OpenOptions {
     pub partition: Option<usize>,
     /// For WLZ archives: which image (1-based number or member name). Default: the first.
     pub member: Option<String>,
+    /// For APFS containers: which volume (1-based number or name). Default: the first.
+    pub volume: Option<String>,
 }
 
 pub struct Image {

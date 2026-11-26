@@ -113,6 +113,7 @@ pub(crate) fn fs_of(s: &[u8]) -> Option<&'static str> {
     boot_fs_of(s)
         .or_else(|| crate::ext::fs_name(s))
         .or_else(|| crate::hfs::fs_name(s))
+        .or_else(|| crate::apfs::fs_name(s))
 }
 
 fn boot_fs_of(s: &[u8]) -> Option<&'static str> {

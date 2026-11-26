@@ -520,3 +520,31 @@ CI against ewfacquire (`.github/oracle/ewfacquire.sh`, workflow `oracle-ewf.yml`
 formats it writes, the compression levels, chunks of 16–32768 sectors, 4096-byte sectors, an
 odd size, 1 MiB segments (155 files, past `.E99`), damaged chunks, a later or missing segment.
 Five small ewfacquire files are in `tests/data/ewf`.
+
+APFS (2026-11-26, `apfs.rs`), read-only, from Apple's "Apple File System Reference". The
+container superblock (`NXSB`) at block 0 points to the checkpoint descriptor area; the newest
+superblock there with a valid Fletcher-64 checksum wins (every metadata block's checksum is
+checked). Volumes (`nx_fs_oid`, virtual) resolve through the container's object map, a
+B-tree of (oid, xid) → address searched for the newest version at or below the checkpoint's
+xid. Each volume (`APSB`) has its own object map and file-system tree: records keyed by
+object ID and type (inode 3, xattr 4, file extent 8, folder entry 9), so a folder's entries
+and an inode's attributes are each a contiguous key range. B-tree nodes have no sibling links,
+so a range is read by descending into every child whose key span overlaps it. Folder entries
+have hashed keys (length and hash in 32 bits) on case- or normalization-insensitive volumes
+and plain ones otherwise; reading tells them apart by length, so no hashing is needed, and
+lookups compare names exactly, then NFC, then case-folded. File data is the extents of the
+inode's private ID (physical block 0 is a hole), sized by the `DSTREAM` extended field.
+Symlink targets are in `com.apple.fs.symlink`, resource forks in `com.apple.ResourceFork`,
+Finder info in `com.apple.FinderInfo`. Files with `UF_COMPRESSED` and a `com.apple.decmpfs`
+header (`fpmc`, method, size) are decompressed: methods 3/7/11 (zlib, LZVN, LZFSE after the
+header; a first byte 0x?F for zlib or 0x06 for LZVN marks stored data) and 4/8/12 (the same in
+64 KiB chunks in the resource fork: a classic resource fork with a chunk table at 0x104 for
+zlib, a table of chunk offsets at the start for LZVN and LZFSE). Raw LZVN chunks decode as the
+`bvxn` block of an LZFSE stream. Free space comes from the space manager found through the
+checkpoint map. Volumes without `APFS_FS_UNENCRYPTED`, encrypted object-map entries, sealed
+volumes, LZBITMAP (13/14) and dataless (5) files are refused. A container gets one volume per
+512 MiB (`nx_max_file_systems`). Cross-checked in CI against macOS 26
+(`.github/oracle/apfs.sh` with `apfs_tree.py`, workflow `oracle-apfs.yml`): macOS fills APFS
+volumes in disk images, and the files s0 extracts (data, links, dates, AppleDouble forks)
+must match the read-only mount. Not tried yet: snapshots (the current state is read), sealed
+system volumes, Fusion containers, block sizes other than 4096, and images of real Macs.

@@ -1,0 +1,19 @@
+{
+ "Folder": {
+  "type": "dir"
+ },
+ "Folder/numbers.txt": {
+  "hidden": false,
+  "mtime": 1795657023,
+  "sha256": "2e57c67a8bbe706a08d6638ec67da02b67b3743ae7d35948cbcf8d1f45cae0a5",
+  "size": 13893,
+  "type": "file"
+ },
+ "first.txt": {
+  "hidden": false,
+  "mtime": 1795657023,
+  "sha256": "b090556520257f060ace9b0d3a64fa53998cdd4bd6186149fa72edc5028f8906",
+  "size": 13,
+  "type": "file"
+ }
+}

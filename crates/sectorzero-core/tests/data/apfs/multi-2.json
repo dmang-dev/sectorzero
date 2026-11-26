@@ -1,0 +1,19 @@
+{
+ "Dir": {
+  "type": "dir"
+ },
+ "Dir/nested.txt": {
+  "hidden": false,
+  "mtime": 1795657024,
+  "sha256": "370a8c04b8a65bb4494275eec227f1b694db04c76da6b0b8ae88ed1ab19790a3",
+  "size": 7,
+  "type": "file"
+ },
+ "second.txt": {
+  "hidden": false,
+  "mtime": 1795657024,
+  "sha256": "90477893ab41972b8c0ed6c81fdc047d2c221c34c0e385992a82b306039ac4d2",
+  "size": 14,
+  "type": "file"
+ }
+}
