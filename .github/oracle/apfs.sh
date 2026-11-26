@@ -38,6 +38,7 @@ build() { # name size fs [--small]
   local dev
   dev=$(attach "$1-rw.dmg") || return 1
   python3 "$TREE" populate "$W/root/$1" ${4:-} || { detach "$dev"; return 1; }
+  if [ -n "${EXTRA:-}" ]; then eval "$EXTRA"; fi
   python3 "$TREE" decmpfs "$W/root/$1"
   detach "$dev"
   hdiutil convert -quiet "$1-rw.dmg" -format UDZO -o "$1.dmg" > /dev/null && rm -f "$1-rw.dmg"
@@ -93,10 +94,8 @@ else
 fi
 
 # 2. Case-sensitive APFS, with two names that differ only in case.
-build "SZ Case" 64m "Case-sensitive APFS" --small || bad "could not build the case-sensitive image"
-dev=$(attach "SZ Case.dmg")
-printf 'upper\n' > "$W/root/SZ Case/Readme.txt"
-detach "$dev"
+EXTRA='printf "upper\n" > "$W/root/SZ Case/Readme.txt"' \
+  build "SZ Case" 64m "Case-sensitive APFS" --small || bad "could not build the case-sensitive image"
 dev=$(attach "SZ Case.dmg" -readonly)
 check "SZ Case.dmg" "SZ Case"
 grep -i 'file system' "out/SZ_Case.dmg-SZ_Case.info" || true
