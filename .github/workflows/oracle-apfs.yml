@@ -46,4 +46,5 @@ jobs:
             ${{ runner.temp }}/apfs-oracle/out/*.info
             ${{ runner.temp }}/apfs-oracle/out/*.diff
             ${{ runner.temp }}/apfs-oracle/out/*.extract
+            ${{ runner.temp }}/apfs-oracle/out/*.log
           if-no-files-found: warn

@@ -11,11 +11,13 @@ const RW: &OpenOptions = &OpenOptions {
     writable: true,
     partition: None,
     member: None,
+    volume: None,
 };
 const RO: &OpenOptions = &OpenOptions {
     writable: false,
     partition: None,
     member: None,
+    volume: None,
 };
 
 fn labelled(label: &str) -> CreateOptions {

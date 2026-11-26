@@ -46,9 +46,10 @@ build() { # name size fs [--small|--tiny]
 }
 
 # s0 extracts volume $3 (default the first) of image $1, data only and with AppleDouble files,
-# and both must match the read-only mount at $W/root/$2.
+# and both must match the read-only mount at $W/root/$2. The files go under $XDIR (default
+# out/; a case-sensitive volume for case-sensitive images).
 check() { # image volume-name [--volume N]
-  local img=$1 vol=$2 name
+  local img=$1 vol=$2 name x=${XDIR:-out}
   shift 2
   name=$(echo "$img-$vol" | tr -c 'A-Za-z0-9.\n-' '_')
   if ! "$S0" info "$img" "$@" > "out/$name.info" 2>&1; then
@@ -57,19 +58,19 @@ check() { # image volume-name [--volume N]
   fi
   local how
   for how in data appledouble; do
-    rm -rf "out/$name-$how"
-    if ! "$S0" extract "$img" "$@" --forks "$how" -o "out/$name-$how" > "out/$name-$how.extract" 2>&1; then
+    rm -rf "$x/$name-$how"
+    if ! "$S0" extract "$img" "$@" --forks "$how" -o "$x/$name-$how" > "out/$name-$how.extract" 2>&1; then
       bad "$name ($how): s0 extract: $(tail -1 "out/$name-$how.extract")"
       continue
     fi
     local flag=
     [ "$how" = appledouble ] && flag=--forks
-    if python3 "$TREE" compare "$W/root/$vol" "out/$name-$how" $flag > "out/$name-$how.diff" 2>&1; then
+    if python3 "$TREE" compare "$W/root/$vol" "$x/$name-$how" $flag > "out/$name-$how.diff" 2>&1; then
       ok "$name ($how): $(tail -1 "out/$name-$how.diff")"
     else
       bad "$name ($how): $(head -4 "out/$name-$how.diff" | tr '\n' ' ')"
     fi
-    rm -rf "out/$name-$how"
+    rm -rf "$x/$name-$how"
   done
 }
 
@@ -98,7 +99,10 @@ fi
 EXTRA='printf "upper\n" > "$W/root/SZ Case/Readme.txt"' FORMAT=ULMO \
   build "SZ Case" 24m "Case-sensitive APFS" --tiny || bad "could not build the case-sensitive image"
 dev=$(attach "SZ Case.dmg" -readonly)
-check "SZ Case.dmg" "SZ Case"
+hdiutil create -quiet -size 200m -fs "Case-sensitive APFS" -volname "SZ Scratch" -type UDIF scratch.dmg
+sdev=$(attach scratch.dmg)
+XDIR="$W/root/SZ Scratch" check "SZ Case.dmg" "SZ Case"
+detach "$sdev"
 grep -i 'file system' "out/SZ_Case.dmg-SZ_Case.info" || true
 python3 "$TREE" manifest "$W/root/SZ Case" samples/case.json
 detach "$dev"
@@ -110,12 +114,14 @@ dev=$(attach multi-rw.dmg)
 python3 "$TREE" populate "$W/root/SZ Multi" --tiny
 container=$(diskutil info -plist "$W/root/SZ Multi" | plutil -extract APFSContainerReference raw -)
 echo "container $container"
-diskutil apfs addVolume "$container" APFS "Second" -mountpoint "$W/root/Second" > /dev/null ||
-  bad "could not add the second volume"
+mkdir -p "$W/root/Second"
+diskutil apfs addVolume "$container" APFS "Second" -mountpoint "$W/root/Second" > out/addvolume.log 2>&1 ||
+  bad "could not add the second volume: $(tail -2 out/addvolume.log | tr '\n' ' ')"
 printf 'second volume\n' > "$W/root/Second/second.txt"
 mkdir -p "$W/root/Second/Dir" && printf 'nested\n' > "$W/root/Second/Dir/nested.txt"
-diskutil apfs addVolume "$container" APFS "Locked" -passphrase "sz-oracle-test" > /dev/null ||
-  bad "could not add the encrypted volume"
+diskutil apfs addVolume "$container" APFS "Locked" -passphrase "sz-oracle-test" >> out/addvolume.log 2>&1 ||
+  bad "could not add the encrypted volume: $(tail -2 out/addvolume.log | tr '\n' ' ')"
+diskutil apfs list "$container" | grep -E 'Name:|Role|FileVault' || true
 detach "$dev"
 hdiutil convert -quiet multi-rw.dmg -format ULMO -o multi.dmg > /dev/null && rm -f multi-rw.dmg
 dev=$(attach multi.dmg -readonly)

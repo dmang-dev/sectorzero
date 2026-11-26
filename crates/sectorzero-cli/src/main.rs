@@ -2025,7 +2025,7 @@ fn print_volume(i: &VolumeInfo) {
                 tags.push(t!("encrypted"));
             }
             if v.open {
-                tags.push(t!("open"));
+                tags.push(t!("opened"));
             }
             let what = if tags.is_empty() {
                 format!("{} {}", v.index, v.name)

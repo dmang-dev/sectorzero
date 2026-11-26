@@ -107,8 +107,8 @@ fn fletcher64(b: &[u8]) -> u64 {
     let (mut s1, mut s2) = (0u64, 0u64);
     // Sums stay far below 2^64 between reductions for blocks up to 64 KiB.
     for chunk in b[8..].chunks(4096) {
-        for w in chunk.chunks_exact(4) {
-            s1 += u64::from(u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+        for w in chunk.as_chunks::<4>().0 {
+            s1 += u64::from(u32::from_le_bytes(*w));
             s2 += s1;
         }
         s1 %= M;
@@ -1230,7 +1230,7 @@ fn parse_inode(v: &[u8]) -> Result<Inode> {
 }
 
 fn write_zeros(out: &mut dyn Write, mut n: u64) -> Result<()> {
-    const Z: [u8; 65536] = [0u8; 65536];
+    static Z: [u8; 65536] = [0u8; 65536];
     while n > 0 {
         let k = n.min(Z.len() as u64) as usize;
         out.write_all(&Z[..k])?;
