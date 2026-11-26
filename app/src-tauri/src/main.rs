@@ -112,6 +112,7 @@ fn current_opts(state: &State<AppState>, writable: bool) -> CmdResult<(PathBuf, 
             writable,
             partition: cur.partition,
             member: cur.member.clone(),
+            volume: None,
         },
     ))
 }
@@ -177,6 +178,7 @@ fn open_image(
         writable: false,
         partition,
         member: member.clone(),
+        volume: None,
     };
     let vol = Volume::open(&path, &opts)?;
     let out = opened(&path, &vol)?;

@@ -1138,7 +1138,7 @@ impl HfsFs {
 }
 
 /// CRC-16/XMODEM (polynomial 0x1021, initial 0), as MacBinary II and III use.
-fn crc16_xmodem(data: &[u8]) -> u16 {
+pub(crate) fn crc16_xmodem(data: &[u8]) -> u16 {
     let mut crc = 0u16;
     for &b in data {
         crc ^= u16::from(b) << 8;

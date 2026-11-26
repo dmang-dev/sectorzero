@@ -48,6 +48,9 @@ struct Img {
     /// Image inside a WLZ list (number or member name). Default: the first.
     #[arg(long)]
     member: Option<String>,
+    /// Volume of an APFS container (number or name). Default: the first.
+    #[arg(long)]
+    volume: Option<String>,
 }
 
 impl Img {
@@ -56,6 +59,7 @@ impl Img {
             writable,
             partition: self.partition,
             member: self.member.clone(),
+            volume: self.volume.clone(),
         }
     }
 }
@@ -2008,6 +2012,34 @@ fn print_volume(i: &VolumeInfo) {
             t!("{} bytes ({} clusters)", i.free_bytes, i.free_clusters),
         );
     }
+    if let Some(apfs) = &i.apfs {
+        for v in &apfs.volumes {
+            let mut tags = Vec::new();
+            if !v.role.is_empty() {
+                tags.push(v.role.clone());
+            }
+            if v.case_sensitive {
+                tags.push(t!("case-sensitive"));
+            }
+            if v.encrypted {
+                tags.push(t!("encrypted"));
+            }
+            if v.open {
+                tags.push(t!("open"));
+            }
+            let what = if tags.is_empty() {
+                format!("{} {}", v.index, v.name)
+            } else {
+                format!("{} {} ({})", v.index, v.name, tags.join(", "))
+            };
+            let label = if v.index == 1 {
+                t!("volumes")
+            } else {
+                String::new()
+            };
+            row(&label, what);
+        }
+    }
     if let Some(iso) = &i.iso {
         if !iso.application.is_empty() {
             row(&t!("application"), &iso.application);
@@ -2051,6 +2083,7 @@ fn label_width() -> usize {
             t!("comment"),
             t!("encryption"),
             t!("volume"),
+            t!("volumes"),
             t!("layout"),
             t!("opened"),
             t!("file system"),

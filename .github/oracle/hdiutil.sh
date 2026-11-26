@@ -112,14 +112,14 @@ make_rw fat MBRSPUD "MS-DOS FAT32" 40m && hdiutil convert -quiet fat.dmg -format
   check_image fat-z.dmg "MBR-FAT32" yes
 make_rw exfat GPTSPUD ExFAT 16m && hdiutil convert -quiet exfat.dmg -format UDBZ -o exfat-z.dmg >/dev/null &&
   check_image exfat-z.dmg "GPT-exFAT" yes
-# APFS: s0 cannot read APFS volumes, so only the disk is compared.
+# APFS (s0 reads it, so the files are compared too; .github/oracle/apfs.sh checks much more).
 make_rw apfs GPTSPUD APFS 32m && hdiutil convert -quiet apfs.dmg -format ULFO -o apfs-z.dmg >/dev/null &&
-  check_image apfs-z.dmg "GPT-APFS" no
+  check_image apfs-z.dmg "GPT-APFS" yes
 
 # 4. A disk image made straight from a folder (hdiutil picks everything itself; on current
-# macOS that is an APFS volume, so only the disk is compared).
+# macOS that is an APFS volume).
 hdiutil create -quiet -srcfolder src -volname "From Folder" -o folder.dmg >/dev/null &&
-  check_image folder.dmg "srcfolder-default" no
+  check_image folder.dmg "srcfolder-default" yes
 
 # 5. Encrypted images must be refused with the encrypted-image error.
 for kind in UDIF SPARSE SPARSEBUNDLE; do

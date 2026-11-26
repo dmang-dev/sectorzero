@@ -13,6 +13,7 @@ use chrono::{Datelike, Local, TimeZone};
 use fatfs::{FatType, FileAttributes, FileSystem, FormatVolumeOptions, FsOptions};
 use serde::Serialize;
 
+use crate::apfs::{ApfsFs, ApfsInfo};
 use crate::container::{self, ContainerInfo, ContainerKind, SharedDisk};
 use crate::error::{Error, Result, display};
 use crate::exfat::ExFatFs;
@@ -151,6 +152,9 @@ pub struct VolumeInfo {
     pub read_only_reason: Option<String>,
     pub container: ContainerInfo,
     pub iso: Option<IsoInfo>,
+    /// The APFS container and its volumes (APFS only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apfs: Option<ApfsInfo>,
 }
 
 /// File system for [`Volume::create`].
@@ -211,6 +215,7 @@ enum Fs {
     Exfat(Box<ExFatFs>),
     Ntfs(Box<NtfsFs>),
     Hfs(Box<HfsFs>),
+    Apfs(Box<ApfsFs>),
 }
 
 /// Result of [`Volume::resize_disk`].
@@ -398,6 +403,7 @@ impl Volume {
             Some("exFAT") => Fs::Exfat(Box::new(ExFatFs::open(w, image.writable)?)),
             Some("NTFS") => Fs::Ntfs(Box::new(NtfsFs::open(w)?)),
             Some("HFS" | "HFS+" | "HFSX") => Fs::Hfs(Box::new(HfsFs::open(w)?)),
+            Some("APFS") => Fs::Apfs(Box::new(ApfsFs::open(w, opts.volume.as_deref())?)),
             Some(other) => {
                 return Err(Error::Unsupported(format!(
                     "{other} volumes (FAT, exFAT, ext2/3/4, NTFS, HFS, HFS+ and ISO 9660 are readable)"
@@ -413,6 +419,11 @@ impl Volume {
                 });
             }
         };
+        if opts.volume.is_some() && !matches!(fs, Fs::Apfs(_)) {
+            return Err(Error::Invalid(
+                "--volume only applies to APFS containers".into(),
+            ));
+        }
         Ok(Volume {
             fs,
             _sync: SyncOnDrop(image.disk.clone()),
@@ -774,6 +785,7 @@ impl Volume {
                     read_only_reason: Some("ISO 9660 images are read-only".into()),
                     container,
                     iso: Some(i.clone()),
+                    apfs: None,
                 })
             }
             Fs::Ext(e) => {
@@ -801,6 +813,7 @@ impl Volume {
                     read_only_reason: blocker,
                     container,
                     iso: None,
+                    apfs: None,
                 })
             }
             Fs::Exfat(e) => {
@@ -832,6 +845,7 @@ impl Volume {
                     read_only_reason: blocker,
                     container,
                     iso: None,
+                    apfs: None,
                 })
             }
             Fs::Hfs(h) => {
@@ -874,6 +888,41 @@ impl Volume {
                     read_only_reason: blocker,
                     container,
                     iso: None,
+                    apfs: None,
+                })
+            }
+            Fs::Apfs(a) => {
+                let i = a.info();
+                let bs = u64::from(i.apfs.block_size);
+                let free = i.apfs.free_blocks.unwrap_or(0);
+                Ok(VolumeInfo {
+                    fs_type: if i.case_sensitive {
+                        "APFS (case-sensitive)"
+                    } else {
+                        "APFS"
+                    }
+                    .into(),
+                    label: i.label.clone(),
+                    volume_id: i.uuid.clone(),
+                    oem_name: i.formatted_by.clone(),
+                    bytes_per_sector: 512,
+                    cluster_size: i.apfs.block_size,
+                    total_clusters: i.apfs.blocks.min(u64::from(u32::MAX)) as u32,
+                    free_clusters: free.min(u64::from(u32::MAX)) as u32,
+                    total_bytes: i.apfs.blocks * bs,
+                    free_bytes: free * bs,
+                    volume_offset: offset,
+                    volume_size: size,
+                    layout: self.image.layout.clone(),
+                    partition: self.image.partition.clone(),
+                    media_format: None,
+                    floppy_format: None,
+                    writable: false,
+                    fs_writable: false,
+                    read_only_reason: Some("APFS volumes are read-only".into()),
+                    container,
+                    iso: None,
+                    apfs: Some(i.apfs.clone()),
                 })
             }
             Fs::Ntfs(n) => {
@@ -907,6 +956,7 @@ impl Volume {
                     read_only_reason: Some("writing to NTFS is not supported yet".into()),
                     container,
                     iso: None,
+                    apfs: None,
                 })
             }
             Fs::Fat(fs) => {
@@ -956,6 +1006,7 @@ impl Volume {
                     read_only_reason: None,
                     container,
                     iso: None,
+                    apfs: None,
                 })
             }
         }
@@ -969,6 +1020,7 @@ impl Volume {
             Fs::Exfat(e) => Ok(e.info().label),
             Fs::Ntfs(n) => Ok(n.label()),
             Fs::Hfs(h) => Ok(h.label()),
+            Fs::Apfs(a) => Ok(a.label()),
             Fs::Fat(fs) => {
                 let label = match fs.read_volume_label_from_root_dir()? {
                     Some(l) => l,
@@ -992,6 +1044,7 @@ impl Volume {
             Fs::Exfat(e) => return e.list(&norm(dir)?),
             Fs::Ntfs(n) => return n.list(&norm(dir)?),
             Fs::Hfs(h) => return h.list(&norm(dir)?),
+            Fs::Apfs(a) => return a.list(&norm(dir)?),
             Fs::Fat(fs) => fs,
         };
         let dir = norm(dir)?;
@@ -1033,6 +1086,7 @@ impl Volume {
             Fs::Exfat(e) => return e.stat(&norm(path)?),
             Fs::Ntfs(n) => return n.stat(&norm(path)?),
             Fs::Hfs(h) => return h.stat(&norm(path)?),
+            Fs::Apfs(a) => return a.stat(&norm(path)?),
             Fs::Fat(fs) => fs,
         };
         let path = norm(path)?;
@@ -1061,6 +1115,7 @@ impl Volume {
             Fs::Exfat(e) => return e.extract(&norm(src)?, dest, overwrite),
             Fs::Ntfs(n) => return n.extract(&norm(src)?, dest, overwrite),
             Fs::Hfs(h) => return h.extract(&norm(src)?, dest, overwrite, forks),
+            Fs::Apfs(a) => return a.extract(&norm(src)?, dest, overwrite, forks),
             Fs::Fat(fs) => fs,
         };
         let src = norm(src)?;
@@ -1083,6 +1138,7 @@ impl Volume {
             Fs::Exfat(e) => return e.copy_out(&norm(path)?, out),
             Fs::Ntfs(n) => return n.copy_out(&norm(path)?, out),
             Fs::Hfs(h) => return h.copy_out(&norm(path)?, out),
+            Fs::Apfs(a) => return a.copy_out(&norm(path)?, out),
             Fs::Fat(fs) => fs,
         };
         let path = norm(path)?;
@@ -1474,6 +1530,7 @@ impl Volume {
                     writable: false,
                     partition: Some(index),
                     member: opts.member.clone(),
+                    volume: opts.volume.clone(),
                 },
             )?;
             let Fs::Fat(sfs) = &src.fs else {
@@ -1526,6 +1583,9 @@ impl Volume {
                 "writing to NTFS volumes (read-only so far)".into(),
             )),
             Fs::Hfs(_) => Err(Error::Unsupported("this operation on HFS volumes".into())),
+            Fs::Apfs(_) => Err(Error::Unsupported(
+                "writing to APFS volumes (they open read-only)".into(),
+            )),
             Fs::Ext(_) => Err(Error::Unsupported("this operation on ext volumes".into())),
             Fs::Exfat(_) => Err(Error::Unsupported("this operation on exFAT volumes".into())),
             Fs::Fat(fs) if self.image.writable => Ok(fs),

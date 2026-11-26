@@ -8,6 +8,7 @@
 //! - file systems: FAT12/16/32 (read/write, via fatfs, plus `fatraw` for label, boot
 //!   sector and defragmentation) and ISO 9660/Joliet/Rock Ridge (read, and `iso_build`).
 
+mod apfs;
 mod checksum;
 mod container;
 mod device;
@@ -27,6 +28,7 @@ mod util;
 mod volume;
 mod window;
 
+pub use apfs::{ApfsInfo, ApfsVolume};
 pub use checksum::{Checksums, checksum_file};
 pub use container::{
     ContainerInfo, ContainerKind, create_differencing, set_fallback_password, set_password,

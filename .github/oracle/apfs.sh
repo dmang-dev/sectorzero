@@ -31,8 +31,9 @@ attach() { # image [-readonly]
 }
 detach() { hdiutil detach -quiet "$1" || hdiutil detach -quiet -force "$1"; }
 
-# A new image with one APFS volume named "$3", filled by apfs_tree.py, converted to UDZO.
-build() { # name size fs [--small]
+# A new image with one APFS volume named "$1", filled by apfs_tree.py, then compressed (UDZO,
+# or the format in $FORMAT). $EXTRA runs before the volume is detached.
+build() { # name size fs [--small|--tiny]
   hdiutil create -quiet -size "$2" -fs "$3" -volname "$1" -layout GPTSPUD -type UDIF "$1-rw.dmg" ||
     return 1
   local dev
@@ -41,7 +42,7 @@ build() { # name size fs [--small]
   if [ -n "${EXTRA:-}" ]; then eval "$EXTRA"; fi
   python3 "$TREE" decmpfs "$W/root/$1"
   detach "$dev"
-  hdiutil convert -quiet "$1-rw.dmg" -format UDZO -o "$1.dmg" > /dev/null && rm -f "$1-rw.dmg"
+  hdiutil convert -quiet "$1-rw.dmg" -format "${FORMAT:-UDZO}" -o "$1.dmg" > /dev/null && rm -f "$1-rw.dmg"
 }
 
 # s0 extracts volume $3 (default the first) of image $1, data only and with AppleDouble files,
@@ -94,27 +95,29 @@ else
 fi
 
 # 2. Case-sensitive APFS, with two names that differ only in case.
-EXTRA='printf "upper\n" > "$W/root/SZ Case/Readme.txt"' \
-  build "SZ Case" 64m "Case-sensitive APFS" --small || bad "could not build the case-sensitive image"
+EXTRA='printf "upper\n" > "$W/root/SZ Case/Readme.txt"' FORMAT=ULMO \
+  build "SZ Case" 24m "Case-sensitive APFS" --tiny || bad "could not build the case-sensitive image"
 dev=$(attach "SZ Case.dmg" -readonly)
 check "SZ Case.dmg" "SZ Case"
 grep -i 'file system' "out/SZ_Case.dmg-SZ_Case.info" || true
 python3 "$TREE" manifest "$W/root/SZ Case" samples/case.json
 detach "$dev"
 
-# 3. One container, three volumes: a second plain one and an encrypted one.
-hdiutil create -quiet -size 64m -fs APFS -volname "SZ Multi" -layout GPTSPUD -type UDIF multi-rw.dmg
+# 3. One container, three volumes: a second plain one and an encrypted one. (A container gets
+# one volume per 512 MiB, so it has to be this large.)
+hdiutil create -quiet -size 1100m -fs APFS -volname "SZ Multi" -layout GPTSPUD -type UDIF multi-rw.dmg
 dev=$(attach multi-rw.dmg)
-python3 "$TREE" populate "$W/root/SZ Multi" --small
+python3 "$TREE" populate "$W/root/SZ Multi" --tiny
 container=$(diskutil info -plist "$W/root/SZ Multi" | plutil -extract APFSContainerReference raw -)
 echo "container $container"
-diskutil apfs addVolume "$container" APFS "Second" -mountpoint "$W/root/Second" > /dev/null
+diskutil apfs addVolume "$container" APFS "Second" -mountpoint "$W/root/Second" > /dev/null ||
+  bad "could not add the second volume"
 printf 'second volume\n' > "$W/root/Second/second.txt"
 mkdir -p "$W/root/Second/Dir" && printf 'nested\n' > "$W/root/Second/Dir/nested.txt"
 diskutil apfs addVolume "$container" APFS "Locked" -passphrase "sz-oracle-test" > /dev/null ||
-  echo "note: could not add the encrypted volume"
+  bad "could not add the encrypted volume"
 detach "$dev"
-hdiutil convert -quiet multi-rw.dmg -format UDZO -o multi.dmg > /dev/null && rm -f multi-rw.dmg
+hdiutil convert -quiet multi-rw.dmg -format ULMO -o multi.dmg > /dev/null && rm -f multi-rw.dmg
 dev=$(attach multi.dmg -readonly)
 "$S0" info multi.dmg > out/multi.info 2>&1
 cat out/multi.info
@@ -135,8 +138,9 @@ dev=$(attach folder.dmg -readonly)
 check folder.dmg "From Folder"
 detach "$dev"
 
-# 5. Small samples for the test suite: a small full tree and the case-sensitive one.
-if build "SZ Sample" 24m APFS --small; then
+# 5. Small samples for the test suite: a small full tree, the case-sensitive one and the
+# container with three volumes.
+if FORMAT=ULMO build "SZ Sample" 24m APFS --tiny; then
   dev=$(attach "SZ Sample.dmg" -readonly)
   check "SZ Sample.dmg" "SZ Sample"
   python3 "$TREE" manifest "$W/root/SZ Sample" samples/sample.json

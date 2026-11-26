@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Helper for .github/oracle/apfs.sh (macOS only).
 
-  apfs_tree.py populate DIR [--small]     fill a mounted APFS volume with test files
+  apfs_tree.py populate DIR [--small|--tiny]  fill a mounted APFS volume with test files
   apfs_tree.py manifest DIR OUT.json      describe a folder tree (what s0 must extract)
   apfs_tree.py compare REF OUT [--forks]  compare s0's extraction OUT with the mounted REF
   apfs_tree.py decmpfs DIR                count files by decmpfs compression type
@@ -73,15 +73,18 @@ def write(root, rel, data):
     return path
 
 
-def populate(root, small):
+def populate(root, size):
+    small = size != "full"
+    tiny = size == "tiny"
+
     def numbers(n):
         return "".join(f"{i}\n" for i in range(1, n + 1)).encode()
 
     write(root, "readme.txt", b"SectorZero APFS oracle\n")
-    write(root, "Folder/numbers.txt", numbers(2000 if small else 20000))
+    write(root, "Folder/numbers.txt", numbers(500 if tiny else 2000 if small else 20000))
     write(root, "Folder/Sub/deep.txt", b"deep\n")
     write(root, "empty.txt", b"")
-    write(root, "random.bin", os.urandom((40 if small else 4096) * 1024))
+    write(root, "random.bin", os.urandom((6 if tiny else 40 if small else 4096) * 1024))
     for name in ["café.txt", "naïve.txt", "日本語.txt",
                  "\U0001f600 smile.txt", "L" * 200 + ".txt", "with space .txt"]:
         write(root, name, name.encode() + b"\n")
@@ -98,11 +101,12 @@ def populate(root, small):
         f.truncate(3 * 1024 * 1024)
 
     # Files that grow in turns, synced each time, so they end up in several extents.
-    rounds = 4 if small else 12
+    rounds = 3 if tiny else 4 if small else 12
+    chunk = 4096 if tiny else 16384 if small else 65536
     files = [open(os.path.join(root, f"frag-{c}.bin"), "wb") for c in "abc"]
     for _ in range(rounds):
         for f in files:
-            f.write(os.urandom(16384 if small else 65536))
+            f.write(os.urandom(chunk))
             f.flush()
             os.fsync(f.fileno())
     for f in files:
@@ -131,7 +135,7 @@ def populate(root, small):
     p = write(root, "forked.txt", b"data fork\n")
     run("xattr", "-wx", "com.apple.ResourceFork", os.urandom(3000).hex(), p)
     p = write(root, "big-fork.txt", b"data fork with a large resource fork\n")
-    run("xattr", "-wx", "com.apple.ResourceFork", os.urandom(200000).hex(), p)
+    run("xattr", "-wx", "com.apple.ResourceFork", os.urandom(9000 if tiny else 200000).hex(), p)
     p = write(root, "typed.txt", b"TEXT ttxt\n")
     run("xattr", "-wx", "com.apple.FinderInfo", (b"TEXTttxt" + bytes(24)).hex(), p)
     p = write(root, "hidden.txt", b"hidden\n")
@@ -145,12 +149,13 @@ def populate(root, small):
 
     # Compressed files: a small one (kept in the attribute) and a large one (in the resource
     # fork, in 64 KiB chunks), with each compressor afsctool has, and ditto's default.
-    text = numbers(30000 if small else 200000)
+    text = numbers(15000 if tiny else 30000 if small else 200000)
     for algo in ["ZLIB", "LZVN", "LZFSE"]:
         d = os.path.join(root, f"comp-{algo.lower()}")
         write(root, f"comp-{algo.lower()}/small.txt", b"small and compressible " * 20)
         write(root, f"comp-{algo.lower()}/text.txt", text)
-        write(root, f"comp-{algo.lower()}/random.bin", os.urandom(70000))
+        if not tiny:
+            write(root, f"comp-{algo.lower()}/random.bin", os.urandom(70000))
         r = subprocess.run(["afsctool", "-c", "-T", algo, d], capture_output=True, text=True)
         if r.returncode != 0:
             print(f"note: afsctool -T {algo}: {r.stderr.strip()}", file=sys.stderr)
@@ -290,7 +295,7 @@ def decmpfs(root):
 def main():
     cmd, args = sys.argv[1], sys.argv[2:]
     if cmd == "populate":
-        populate(args[0], "--small" in args)
+        populate(args[0], "tiny" if "--tiny" in args else "small" if "--small" in args else "full")
     elif cmd == "manifest":
         with open(args[1], "w", encoding="utf-8") as f:
             json.dump(describe(args[0]), f, indent=1, ensure_ascii=False, sort_keys=True)

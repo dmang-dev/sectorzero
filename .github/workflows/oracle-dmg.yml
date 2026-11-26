@@ -5,9 +5,10 @@ name: Apple disk image oracle
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'oracle/**']
     paths:
       - crates/sectorzero-core/src/container/dmg.rs
+      - crates/sectorzero-core/src/apfs.rs
       - .github/oracle/hdiutil.sh
       - .github/workflows/oracle-dmg.yml
 
