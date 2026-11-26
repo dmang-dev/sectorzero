@@ -118,10 +118,8 @@ echo "container $container"
 # A custom mount point needs root: the new volume is mounted where macOS puts it.
 diskutil apfs addVolume "$container" APFS "Second" > out/addvolume.log 2>&1 ||
   bad "could not add the second volume: $(tail -2 out/addvolume.log | tr '\n' ' ')"
-second_dev=$(diskutil apfs list -plist "$container" | python3 -c '
-import plistlib, sys
-d = plistlib.load(sys.stdin.buffer)
-print([v["DeviceIdentifier"] for c in d["Containers"] for v in c["Volumes"] if v["Name"] == "Second"][0])')
+cat out/addvolume.log
+second_dev=$(grep -Eo 'disk[0-9]+s[0-9]+' out/addvolume.log | tail -1)
 diskutil mount "$second_dev" >> out/addvolume.log 2>&1
 second=$(diskutil info -plist "$second_dev" | plutil -extract MountPoint raw -)
 echo "second volume $second_dev at $second"
